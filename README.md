@@ -1,73 +1,34 @@
-# TapCopy
+# TapCopy — Píldora Camaleón (v1.0.2)
 
-Utilidad interna de **BLACK EYE** para macOS: selecciona texto en cualquier app
-(Chrome, Brave, Arc, Safari, apps nativas) y aparece una píldora **Copiar**
-junto al cursor. Un clic copia la selección.
+Utilidad nativa de **BLACK EYE** para macOS: selecciona texto en cualquier app
+(Chrome, Brave, Arc, Safari, Cursor, VS Code, PDFs y apps nativas) y aparece una
+píldora inteligente flotante sin robar el foco.
 
-- Swift puro + AppKit. Sin Electron, sin dependencias externas.
-- Sin copiado automático y sin tocar el portapapeles al leer la selección.
-- Píldora flotante que nunca roba el foco (`NSPanel` no activante).
-- Icono de barra de menús, arranque al inicio y About bilingüe EN | ES.
-- Firma Developer ID `YH6W55MP95`, Hardened Runtime, notarización y *stapling*
-  doble (app + DMG).
-
-## Requisitos
-
-- macOS 14 o superior (Apple Silicon).
-- Xcode 15+ / Swift 5.10+.
-- Perfil de notarización de `notarytool` llamado `ordena-notary`.
+- **Swift 5.10 + AppKit puro** (`0.0%` CPU en reposo, cero dependencias externas).
+- **4 funciones de Píldora Camaleón integradas** (conmutables desde la barra de menús):
+  1. **Detección contextual de entidades**: abre URLs/dominios, revela rutas existentes en Finder, muestra swatch real `#HEX ↔ RGB` y resuelve operaciones matemáticas al vuelo (`= resultado`).
+  2. **Limpieza y transformación rápida**: botón `Plano` (sin estilos ni saltos rotos) y menú `Aa` (`MAYÚSCULAS`, `minúsculas`, `Tipo Título`, `snake_case`, `camelCase`, bloque Markdown y conteo de palabras/caracteres).
+  3. **Búsqueda web sin foco**: lupa directa en Google (y búsqueda de código en GitHub / StackOverflow dentro de `Aa`).
+  4. **Estante flotante (`Pin`)**: fija hasta 4 fragmentos arrastrables en pantalla sin sobrescribir tu portapapeles principal.
+- **Motor Anti-Traslape (`WindowCollisionAvoidance`)**: posicionamiento inferior inteligente que deja libre la franja superior de Notion/ChatGPT/Medium y detecta vía `CGWindowList` menús flotantes de terceros (PopClip, Raycast, DeepL, Grammarly) reacomodándose sin chocar.
+- Firma Developer ID `YH6W55MP95`, Hardened Runtime, notarización `ordena-notary` y *stapling* doble.
 
 ## Compilar e instalar
 
+Instalación rápida local firmada con Developer ID:
+
+```bash
+./scripts/build_and_notarize.sh --dev
+```
+
+Si macOS dejó desincronizado el permiso de Accesibilidad tras compilaciones previas:
+
+```bash
+./scripts/build_and_notarize.sh --dev --reset-tcc
+```
+
+Pipeline completo de release (DMG + notarización + stapling):
+
 ```bash
 ./scripts/build_and_notarize.sh
-```
-
-El script genera el icono, compila en release, firma, empaqueta el DMG,
-notariza, engrapa app y DMG, y instala en `/Applications/TapCopy.app`.
-
-Para subir la versión patch antes de compilar:
-
-```bash
-./scripts/build_and_notarize.sh --bump
-```
-
-La versión vive en `version.txt` (primera línea: versión, segunda: build).
-
-## Uso
-
-1. Primer arranque: acepta el permiso de **Accesibilidad** (el icono del Dock
-   permanece visible hasta que lo ocultes desde el menú).
-2. Selecciona texto con el ratón o doble clic.
-3. Pulsa **Copiar** en la píldora. Si la app no responde a Cmd+C, TapCopy
-   escribe el texto leído vía Accessibility directamente en el portapapeles.
-
-Clic derecho en el icono de la barra de menús: encender/apagar al instante.
-
-## Solución de problemas
-
-- La píldora solo aparece con **Permiso de Accesibilidad** concedido
-  (Ajustes del Sistema → Privacidad y Seguridad → Accesibilidad). El menú del
-  icono junto al reloj muestra el estado y abre el panel directamente.
-- Si la app se movió o se volvió a firmar, macOS puede pedir desactivar y
-  volver a activar el permiso.
-- Traza del pipeline en `~/Library/Logs/TapCopy.log` (rotación a 512 KB):
-  monitores instalados, gesto detectado, app leída y caracteres capturados.
-- Prueba visual interna: `open -n /Applications/TapCopy.app --args --demo-pill`.
-
-## Estructura
-
-```
-Sources/TapCopy/
-  main.swift                    Arranque NSApplication
-  AppDelegate.swift             Ciclo de vida, menú principal, política de Dock
-  SignatureVerifier.swift       Team ID + chip real vía sysctl
-  PermissionManager.swift       TCC de Accesibilidad sin polling residual
-  SelectionMonitor.swift        Gestos de ratón + extracción AX
-  TapCopyPanelController.swift  Píldora flotante y copiado
-  StatusBarController.swift     Icono de barra de menús y ajustes
-  AboutWindowController.swift   Ventana Acerca de bilingüe
-scripts/
-  GenerateIcon.swift            Icono con CoreGraphics + iconutil
-  build_and_notarize.sh         Pipeline de release
 ```

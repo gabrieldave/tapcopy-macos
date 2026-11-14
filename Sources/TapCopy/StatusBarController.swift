@@ -47,18 +47,25 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     func refreshAppearance() {
         guard let button = statusItem.button else { return }
         let enabled = isEnabled()
-        let symbol = enabled ? "doc.on.clipboard.fill" : "doc.on.clipboard"
+        let granted = isAccessibilityGranted()
+
+        let symbol: String
+        if !granted {
+            symbol = "exclamationmark.triangle.fill"
+        } else {
+            symbol = enabled ? "doc.on.clipboard.fill" : "doc.on.clipboard"
+        }
+
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "TapCopy")
         image?.isTemplate = true
         button.image = image
-        button.appearsDisabled = !enabled
+        button.appearsDisabled = !enabled && granted
     }
 
     // MARK: - Click handling
 
     @objc private func statusItemClicked(_ sender: Any?) {
         if NSApp.currentEvent?.type == .rightMouseUp {
-            // One-click power toggle straight from the menu bar.
             toggleEnabled()
             refreshAppearance()
             return
@@ -73,11 +80,20 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        _ = PermissionManager.shared.refresh()
         let enabled = isEnabled()
         let granted = isAccessibilityGranted()
+        let monitor = SelectionMonitor.shared
+
+        let stateTitle: String
+        if !granted {
+            stateTitle = "Falta permiso de Accesibilidad"
+        } else {
+            stateTitle = enabled ? "TapCopy activo · Píldora Camaleón" : "TapCopy apagado"
+        }
 
         let stateItem = NSMenuItem(
-            title: enabled ? "TapCopy activo · selecciona y copia" : "TapCopy apagado",
+            title: stateTitle,
             action: nil,
             keyEquivalent: ""
         )
@@ -93,9 +109,37 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         toggleItem.target = self
         menu.addItem(toggleItem)
 
+        let chameleonItem = NSMenuItem(
+            title: "Modo Camaleón (4 funciones)",
+            action: #selector(toggleChameleon),
+            keyEquivalent: ""
+        )
+        chameleonItem.target = self
+        chameleonItem.state = monitor.isChameleonModeEnabled ? .on : .off
+        menu.addItem(chameleonItem)
+
+        if let lastApp = monitor.lastExternalApp {
+            let pauseItem = NSMenuItem(
+                title: "Pausar en \(lastApp.name)",
+                action: #selector(toggleExcludeCurrentApp),
+                keyEquivalent: ""
+            )
+            pauseItem.target = self
+            pauseItem.state = monitor.isAppExcluded(bundleID: lastApp.bundleID) ? .on : .off
+            menu.addItem(pauseItem)
+        }
+
+        let testItem = NSMenuItem(
+            title: "Probar píldora ahora",
+            action: #selector(testPillNow),
+            keyEquivalent: ""
+        )
+        testItem.target = self
+        menu.addItem(testItem)
+
         let permissionTitle = granted
             ? "Permiso de Accesibilidad: Concedido"
-            : "Permiso de Accesibilidad: Pendiente…"
+            : "Activar Permiso de Accesibilidad…"
         let permissionItem = NSMenuItem(
             title: permissionTitle,
             action: #selector(openPermission),
@@ -150,6 +194,26 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func toggleTapCopy() {
         toggleEnabled()
         refreshAppearance()
+    }
+
+    @objc private func toggleChameleon() {
+        SelectionMonitor.shared.toggleChameleonMode()
+    }
+
+    @objc private func toggleExcludeCurrentApp() {
+        guard let lastApp = SelectionMonitor.shared.lastExternalApp else { return }
+        SelectionMonitor.shared.toggleExcludedApp(bundleID: lastApp.bundleID)
+    }
+
+    @objc private func testPillNow() {
+        let anchor = NSEvent.mouseLocation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            TapCopyPanelController.shared.show(
+                near: anchor,
+                fallbackText: "145 * 1.16",
+                force: true
+            )
+        }
     }
 
     @objc private func toggleDockIcon() {

@@ -1,64 +1,139 @@
 import AppKit
 import ApplicationServices
 
-/// Watches mouse gestures and pulls the current text selection through the
-/// Accessibility API. It never touches the pasteboard while reading and never
-/// synthesizes Cmd+C on mouse-up, so the blue selection stays intact.
+/// Watches mouse/trackpad gestures and pulls the current text selection through
+/// the Accessibility API. It never touches the pasteboard while reading and
+/// never synthesizes Cmd+C on mouse-up, so the blue selection stays intact.
 final class SelectionMonitor {
 
     static let shared = SelectionMonitor()
 
     // MARK: - State
 
-    var isEnabled: Bool = true {
-        didSet {
-            guard isEnabled != oldValue else { return }
-            applyEnabledState()
-            UserDefaults.standard.set(isEnabled, forKey: "tapCopyEnabled")
-        }
-    }
+    private(set) var isEnabled: Bool = true
+    private(set) var isChameleonModeEnabled: Bool = true
+    private(set) var lastExternalApp: (name: String, bundleID: String)?
 
+    private var excludedBundleIDs: Set<String> = []
     private var monitors: [Any] = []
+    private var isTrackingDrag = false
     private var mouseDownPoint: NSPoint = .zero
     private var maxDragDistance: CGFloat = 0
+
     private var enhancedPIDs = Set<pid_t>()
+    private let pidLock = NSLock()
+
+    private var pendingReadWorkItem: DispatchWorkItem?
+    private var readSequence: UInt64 = 0
 
     private let discardedRoles: Set<String> = [
-        "AXSlider", "AXScrollBar", "AXGrowArea", "AXSplitter", "AXToolbar"
+        "AXSlider", "AXScrollBar", "AXGrowArea", "AXSplitter", "AXToolbar", "AXMenuBar", "AXMenu"
     ]
 
     private init() {}
 
-    // MARK: - Public helpers
+    // MARK: - Lifecycle & Power State
 
-    /// Must be called once at launch: the read-only `isEnabled` default never
-    /// fires `didSet`, so monitors are installed explicitly here.
-    func activate() {
+    /// Called once at launch without overwriting UserDefaults unless explicitly toggled by the user.
+    func configureAtLaunch(enabled: Bool) {
+        let defaults = UserDefaults.standard
+        if let savedChameleon = defaults.object(forKey: "tapCopyChameleonMode") as? Bool {
+            isChameleonModeEnabled = savedChameleon
+        } else {
+            isChameleonModeEnabled = true
+        }
+        if let savedExcluded = defaults.stringArray(forKey: "tapCopyExcludedApps") {
+            excludedBundleIDs = Set(savedExcluded)
+        }
+        if let front = NSWorkspace.shared.frontmostApplication {
+            noteActivatedApplication(front)
+        }
+
+        isEnabled = enabled
         applyEnabledState()
+    }
+
+    /// Persists only explicit user power changes (never called by app termination).
+    func setEnabled(_ enabled: Bool) {
+        guard enabled != isEnabled else { return }
+        isEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "tapCopyEnabled")
+        TapLog.log("User toggled TapCopy enabled=\(enabled)")
+        applyEnabledState()
+    }
+
+    func toggle() {
+        setEnabled(!isEnabled)
+    }
+
+    func toggleChameleonMode() {
+        isChameleonModeEnabled.toggle()
+        UserDefaults.standard.set(isChameleonModeEnabled, forKey: "tapCopyChameleonMode")
+        TapLog.log("Chameleon mode toggled=\(isChameleonModeEnabled)")
+    }
+
+    func noteActivatedApplication(_ app: NSRunningApplication) {
+        guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              let bundleID = app.bundleIdentifier else {
+            return
+        }
+        let name = app.localizedName ?? bundleID
+        lastExternalApp = (name: name, bundleID: bundleID)
+    }
+
+    func isAppExcluded(bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return excludedBundleIDs.contains(bundleID)
+    }
+
+    func toggleExcludedApp(bundleID: String) {
+        if excludedBundleIDs.contains(bundleID) {
+            excludedBundleIDs.remove(bundleID)
+        } else {
+            excludedBundleIDs.insert(bundleID)
+            TapCopyPanelController.shared.hideImmediately()
+        }
+        UserDefaults.standard.set(Array(excludedBundleIDs).sorted(), forKey: "tapCopyExcludedApps")
+        TapLog.log("Updated excluded apps: \(excludedBundleIDs)")
+    }
+
+    /// Refreshes event monitors after TCC grant, Mac wake, or display reconfiguration.
+    func reinstallMonitors() {
+        removeMonitors()
+        if isEnabled {
+            installMonitors()
+        }
+    }
+
+    /// Clean teardown on app quit/reboot WITHOUT saving `false` into UserDefaults.
+    func shutdown() {
+        pendingReadWorkItem?.cancel()
+        pendingReadWorkItem = nil
+        removeMonitors()
+        TapCopyPanelController.shared.hideImmediately()
     }
 
     private func applyEnabledState() {
         if isEnabled {
             installMonitors()
         } else {
+            pendingReadWorkItem?.cancel()
+            pendingReadWorkItem = nil
             removeMonitors()
             TapCopyPanelController.shared.hideImmediately()
         }
     }
 
-    func toggle() {
-        isEnabled.toggle()
-    }
-
     func resetApplicationCache() {
+        pidLock.lock()
         enhancedPIDs.removeAll()
+        pidLock.unlock()
     }
 
     // MARK: - Event monitors
 
     private func installMonitors() {
         guard monitors.isEmpty else { return }
-        TapLog.log("Event monitors installed")
 
         let mouseEvents: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
         let dismissEvents: NSEvent.EventTypeMask = [.rightMouseDown, .otherMouseDown, .scrollWheel, .keyDown]
@@ -85,6 +160,8 @@ final class SelectionMonitor {
         }) {
             monitors.append(localDismiss)
         }
+
+        TapLog.log("Event monitors installed (count=\(monitors.count))")
     }
 
     private func removeMonitors() {
@@ -99,29 +176,40 @@ final class SelectionMonitor {
     private func handleMouse(_ event: NSEvent) {
         guard isEnabled else { return }
         let mouse = NSEvent.mouseLocation
-        let insidePanel = TapCopyPanelController.shared.contains(screenPoint: mouse, toleratedInset: 6)
+        let insideOwnUI = TapCopyPanelController.shared.contains(screenPoint: mouse, toleratedInset: 4)
+            || PinShelfController.shared.contains(screenPoint: mouse)
 
         switch event.type {
         case .leftMouseDown:
-            // A click on the pill must land cleanly on the "Copiar" button.
-            if insidePanel { return }
+            if insideOwnUI { return }
+            pendingReadWorkItem?.cancel()
+            pendingReadWorkItem = nil
+            isTrackingDrag = true
             mouseDownPoint = mouse
             maxDragDistance = 0
             TapCopyPanelController.shared.hideImmediately()
 
         case .leftMouseDragged:
+            if insideOwnUI { return }
+            if !isTrackingDrag {
+                isTrackingDrag = true
+                mouseDownPoint = NSPoint(x: mouse.x - event.deltaX, y: mouse.y + event.deltaY)
+            }
             let dx = mouse.x - mouseDownPoint.x
             let dy = mouse.y - mouseDownPoint.y
-            let distance = sqrt(dx * dx + dy * dy)
-            maxDragDistance = max(maxDragDistance, distance)
+            maxDragDistance = max(maxDragDistance, hypot(dx, dy))
 
         case .leftMouseUp:
-            if insidePanel { return }
-            let wasRealSelection = maxDragDistance >= 5.0 || event.clickCount >= 2
-            TapLog.log("MouseUp drag=\(String(format: "%.1f", maxDragDistance)) clicks=\(event.clickCount) real=\(wasRealSelection) trusted=\(PermissionManager.shared.isTrusted)")
+            if insideOwnUI { return }
+            let shiftClick = event.modifierFlags.contains(.shift)
+            let wasRealSelection = maxDragDistance >= 3.5 || event.clickCount >= 2 || shiftClick
+            let startPoint = isTrackingDrag ? mouseDownPoint : mouse
+            let endPoint = mouse
+            TapLog.log("MouseUp drag=\(String(format: "%.1f", maxDragDistance)) clicks=\(event.clickCount) shift=\(shiftClick) real=\(wasRealSelection)")
+            isTrackingDrag = false
             maxDragDistance = 0
             guard wasRealSelection else { return }
-            scheduleSelectionRead()
+            scheduleSelectionRead(startPoint: startPoint, endPoint: endPoint)
 
         default:
             break
@@ -132,7 +220,7 @@ final class SelectionMonitor {
         guard isEnabled else { return }
         switch event.type {
         case .keyDown:
-            guard event.keyCode == 53 else { return }
+            guard event.keyCode == 53 else { return } // Esc
         case .rightMouseDown, .otherMouseDown, .scrollWheel:
             break
         default:
@@ -143,20 +231,32 @@ final class SelectionMonitor {
 
     // MARK: - Selection extraction
 
-    private func scheduleSelectionRead() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.075) { [weak self] in
-            self?.readFrontmostSelection()
+    private func scheduleSelectionRead(startPoint: NSPoint, endPoint: NSPoint) {
+        pendingReadWorkItem?.cancel()
+        readSequence &+= 1
+        let currentSequence = readSequence
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.readFrontmostSelection(
+                startPoint: startPoint,
+                endPoint: endPoint,
+                sequence: currentSequence
+            )
         }
+        pendingReadWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.075, execute: work)
     }
 
     func debugReadFrontmostSelection() {
-        readFrontmostSelection()
+        let mouse = NSEvent.mouseLocation
+        readSequence &+= 1
+        readFrontmostSelection(startPoint: mouse, endPoint: mouse, sequence: readSequence)
     }
 
-    private func readFrontmostSelection() {
+    private func readFrontmostSelection(startPoint: NSPoint, endPoint: NSPoint, sequence: UInt64) {
         guard isEnabled else { return }
-        guard PermissionManager.shared.isTrusted else {
-            TapLog.log("Read skipped: no Accessibility permission")
+        guard PermissionManager.shared.refresh() else {
+            TapLog.log("Read skipped: Accessibility permission not granted")
             return
         }
         guard let frontApp = NSWorkspace.shared.frontmostApplication,
@@ -164,85 +264,143 @@ final class SelectionMonitor {
             return
         }
 
+        noteActivatedApplication(frontApp)
+        if isAppExcluded(bundleID: frontApp.bundleIdentifier) {
+            TapLog.log("Read skipped: app excluded (\(frontApp.bundleIdentifier ?? "?"))")
+            return
+        }
+
         let pid = frontApp.processIdentifier
-        let mouse = NSEvent.mouseLocation
-        TapLog.log("Reading selection from \(frontApp.localizedName ?? "?") [\(pid)]")
+        let appName = frontApp.localizedName ?? "?"
+        TapLog.log("Reading selection from \(appName) [\(pid)]")
 
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             guard let self else { return }
-            let text = self.extractSelection(pid: pid, at: mouse)
-            guard let selected = text else {
-                TapLog.log("No selected text returned for PID \(pid)")
+            var selected = self.extractSelection(
+                pid: pid,
+                startPoint: startPoint,
+                endPoint: endPoint,
+                forceReenableAX: false
+            )
+
+            // Retry once if Chromium/Electron/WebKit was still building its AX tree or updating selection.
+            if selected == nil {
+                usleep(130_000)
+                selected = self.extractSelection(
+                    pid: pid,
+                    startPoint: startPoint,
+                    endPoint: endPoint,
+                    forceReenableAX: true
+                )
+            }
+
+            guard let finalSelection = selected else {
+                TapLog.log("No selected text returned for \(appName) [\(pid)]")
                 return
             }
-            TapLog.log("Selection captured: \(selected.count) chars")
-            DispatchQueue.main.async {
-                TapCopyPanelController.shared.show(near: NSEvent.mouseLocation, fallbackText: selected)
+
+            TapLog.log("Selection captured: \(finalSelection.count) chars from \(appName)")
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isEnabled, self.readSequence == sequence else { return }
+                TapCopyPanelController.shared.show(near: NSEvent.mouseLocation, fallbackText: finalSelection)
             }
         }
     }
 
-    /// Enables the modern web accessibility trees once per process and quits at
-    /// the first non-empty selection found. The element under the cursor is the
-    /// primary source (it can belong to an app that is not frontmost for a
-    /// fraction of a second), with the focused app as fallback.
-    private func extractSelection(pid: pid_t, at mouse: NSPoint) -> String? {
+    private func extractSelection(
+        pid: pid_t,
+        startPoint: NSPoint,
+        endPoint: NSPoint,
+        forceReenableAX: Bool
+    ) -> String? {
         let ownPID = ProcessInfo.processInfo.processIdentifier
-        let underCursor = element(at: mouse)
-        let cursorPID = underCursor.flatMap { ownerPID(of: $0) }
-        if let cursorPID {
-            let name = NSRunningApplication(processIdentifier: cursorPID)?.localizedName ?? "?"
-            TapLog.log("Cursor element owner: \(name) [\(cursorPID)]")
-        }
-
         var orderedPIDs: [pid_t] = []
-        if let cursorPID, cursorPID != ownPID, cursorPID != pid {
-            orderedPIDs.append(cursorPID)
-        }
+
         if pid != ownPID {
+            let frontAppRef = AXUIElementCreateApplication(pid)
+            enableModernAccessibility(frontAppRef, pid: pid, force: forceReenableAX)
             orderedPIDs.append(pid)
         }
 
-        var candidates: [(pid: pid_t, element: AXUIElement)] = []
-        if let underCursor, let cursorPID {
-            candidates.append((cursorPID, underCursor))
+        let midPoint = NSPoint(
+            x: (startPoint.x + endPoint.x) * 0.5,
+            y: (startPoint.y + endPoint.y) * 0.5
+        )
+
+        var hitElements: [AXUIElement] = []
+        for point in [endPoint, midPoint, startPoint] {
+            if let hit = element(at: point), let hitPID = ownerPID(of: hit), hitPID != ownPID {
+                if let hitApp = NSRunningApplication(processIdentifier: hitPID),
+                   isAppExcluded(bundleID: hitApp.bundleIdentifier) {
+                    continue
+                }
+                if !orderedPIDs.contains(hitPID) {
+                    let hitAppRef = AXUIElementCreateApplication(hitPID)
+                    enableModernAccessibility(hitAppRef, pid: hitPID, force: forceReenableAX)
+                    orderedPIDs.insert(hitPID, at: 0)
+                    if let refreshedHit = element(at: point) {
+                        hitElements.append(refreshedHit)
+                        continue
+                    }
+                }
+                hitElements.append(hit)
+            }
         }
 
+        var candidates: [AXUIElement] = []
         for targetPID in orderedPIDs {
             let appRef = AXUIElementCreateApplication(targetPID)
-            enableModernAccessibility(appRef, pid: targetPID)
             if let focused = copyElement(appRef, attribute: kAXFocusedUIElementAttribute as String) {
-                candidates.append((targetPID, focused))
-            }
-            if let window = copyElement(appRef, attribute: kAXFocusedWindowAttribute as String) {
-                candidates.append((targetPID, window))
+                candidates.append(focused)
             }
         }
+        candidates.append(contentsOf: hitElements)
 
         for candidate in candidates {
-            if let role = role(of: candidate.element), discardedRoles.contains(role) {
+            if let role = role(of: candidate), discardedRoles.contains(role) {
                 continue
             }
-            if let text = extractText(from: candidate.element) {
+            if let text = extractTextWalkingParents(from: candidate, maxLevels: 20) {
                 return text
             }
         }
+
+        // Fallback: search downward inside the focused/main window for AXWebArea or text containers.
+        for targetPID in orderedPIDs {
+            let appRef = AXUIElementCreateApplication(targetPID)
+            let window = copyElement(appRef, attribute: kAXFocusedWindowAttribute as String)
+                ?? copyElement(appRef, attribute: kAXMainWindowAttribute as String)
+            if let window, let text = extractTextFromWindowSubtree(window: window) {
+                return text
+            }
+        }
+
         return nil
     }
 
-    private func enableModernAccessibility(_ appRef: AXUIElement, pid: pid_t) {
-        guard !enhancedPIDs.contains(pid) else { return }
+    private func enableModernAccessibility(_ appRef: AXUIElement, pid: pid_t, force: Bool) {
+        pidLock.lock()
+        let alreadyEnhanced = enhancedPIDs.contains(pid)
+        if !alreadyEnhanced {
+            enhancedPIDs.insert(pid)
+        }
+        pidLock.unlock()
+
+        guard !alreadyEnhanced || force else { return }
         AXUIElementSetAttributeValue(appRef, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(appRef, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        enhancedPIDs.insert(pid)
-        // Give Chromium/WebKit a beat to build its tree on first use.
-        usleep(35_000)
+        if !alreadyEnhanced {
+            usleep(65_000)
+        }
     }
 
-    private func extractText(from element: AXUIElement) -> String? {
+    private func extractTextWalkingParents(from element: AXUIElement, maxLevels: Int) -> String? {
         var current: AXUIElement? = element
         var level = 0
-        while let node = current, level <= 4 {
+        while let node = current, level <= maxLevels {
+            if let currentRole = role(of: node), discardedRoles.contains(currentRole) {
+                return nil
+            }
             if let text = directSelection(in: node) {
                 return text
             }
@@ -252,17 +410,43 @@ final class SelectionMonitor {
         return nil
     }
 
+    private func extractTextFromWindowSubtree(window: AXUIElement) -> String? {
+        var queue: [(element: AXUIElement, depth: Int)] = [(window, 0)]
+        var index = 0
+        let maxVisited = 72
+        let maxDepth = 7
+
+        while index < queue.count && index < maxVisited {
+            let current = queue[index]
+            index += 1
+
+            if let nodeRole = role(of: current.element), discardedRoles.contains(nodeRole) {
+                continue
+            }
+            if let text = directSelection(in: current.element) {
+                return text
+            }
+            guard current.depth < maxDepth else { continue }
+
+            for child in copyChildElements(current.element) {
+                queue.append((child, current.depth + 1))
+                if queue.count >= maxVisited { break }
+            }
+        }
+        return nil
+    }
+
     private func directSelection(in element: AXUIElement) -> String? {
         // (a) Plain selected text.
         var selectedValue: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedValue) == .success,
            let raw = selectedValue as? String {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { return raw }
+            if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return raw
+            }
         }
 
-        // (b) Text marker range — required for multi-node selections (lists,
-        // code blocks) in Chrome, Brave, Arc, Safari and WebKit views.
+        // (b) Text marker range — Chrome, Brave, Arc, Safari, Electron, and WebKit views.
         var markerValue: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXSelectedTextMarkerRangeAttribute as CFString, &markerValue) == .success,
            let marker = markerValue {
@@ -273,8 +457,43 @@ final class SelectionMonitor {
                 marker,
                 &stringValue
             ) == .success, let raw = stringValue as? String {
-                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { return raw }
+                if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return raw
+                }
+            }
+        }
+
+        // (c) Selected CFRange — Preview/PDFKit, code editors, and custom AppKit views.
+        var rangeRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+           let rawRange = rangeRef,
+           CFGetTypeID(rawRange) == AXValueGetTypeID() {
+            let axValue = rawRange as! AXValue
+            var cfRange = CFRange(location: 0, length: 0)
+            if AXValueGetValue(axValue, .cfRange, &cfRange), cfRange.length > 0, cfRange.location >= 0 {
+                var paramStringRef: CFTypeRef?
+                if AXUIElementCopyParameterizedAttributeValue(
+                    element,
+                    kAXStringForRangeParameterizedAttribute as CFString,
+                    axValue,
+                    &paramStringRef
+                ) == .success, let raw = paramStringRef as? String {
+                    if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return raw
+                    }
+                }
+
+                var fullValueRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &fullValueRef) == .success,
+                   let fullString = fullValueRef as? String {
+                    let nsString = fullString as NSString
+                    if cfRange.location + cfRange.length <= nsString.length {
+                        let sub = nsString.substring(with: NSRange(location: cfRange.location, length: cfRange.length))
+                        if !sub.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            return sub
+                        }
+                    }
+                }
             }
         }
 
@@ -282,6 +501,29 @@ final class SelectionMonitor {
     }
 
     // MARK: - AX helpers
+
+    private func copyChildElements(_ element: AXUIElement) -> [AXUIElement] {
+        for attr in [kAXChildrenAttribute as String, kAXContentsAttribute as String] {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, attr as CFString, &value) == .success,
+                  let array = value as? NSArray,
+                  array.count > 0 else {
+                continue
+            }
+            var children: [AXUIElement] = []
+            children.reserveCapacity(array.count)
+            for item in array {
+                let ref = item as CFTypeRef
+                if CFGetTypeID(ref) == AXUIElementGetTypeID() {
+                    children.append(ref as! AXUIElement)
+                }
+            }
+            if !children.isEmpty {
+                return children
+            }
+        }
+        return []
+    }
 
     private func copyElement(_ element: AXUIElement, attribute: String) -> AXUIElement? {
         var value: CFTypeRef?
@@ -308,7 +550,6 @@ final class SelectionMonitor {
     }
 
     private func element(at screenPoint: NSPoint) -> AXUIElement? {
-        // AXUIElementCopyElementAtPosition uses global top-left origin coordinates.
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let axX = Float(screenPoint.x)
         let axY = Float(primaryHeight - screenPoint.y)

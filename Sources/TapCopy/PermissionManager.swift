@@ -2,7 +2,8 @@ import AppKit
 import ApplicationServices
 
 /// Accessibility (TCC) state. The polling timer stops the instant access is
-/// granted, so TapCopy idles at 0.0% CPU while waiting.
+/// granted, so TapCopy idles at 0.0% CPU while waiting, and refreshes live
+/// whenever a selection gesture occurs.
 final class PermissionManager {
 
     static let shared = PermissionManager()
@@ -16,23 +17,18 @@ final class PermissionManager {
     // MARK: - Public API
 
     func requestIfNeeded() {
-        refresh()
-        guard !isTrusted else { return }
+        if refresh() { return }
 
-        let defaults = UserDefaults.standard
-        if !defaults.bool(forKey: "didRequestAccessibility") {
-            defaults.set(true, forKey: "didRequestAccessibility")
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-            let prompted = AXIsProcessTrustedWithOptions(options)
-            TapLog.log("Accessibility prompt shown: \(prompted)")
-        }
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let prompted = AXIsProcessTrustedWithOptions(options)
+        TapLog.log("Accessibility prompt requested (trusted=\(prompted))")
         startPolling()
     }
 
     func startPolling() {
         guard timer == nil, !isTrusted else { return }
         let newTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.refresh()
+            _ = self?.refresh()
         }
         RunLoop.main.add(newTimer, forMode: .common)
         timer = newTimer
@@ -43,17 +39,27 @@ final class PermissionManager {
         timer = nil
     }
 
-    func refresh() {
+    @discardableResult
+    func refresh() -> Bool {
         let trusted = AXIsProcessTrusted()
         let changed = (trusted != isTrusted)
         isTrusted = trusted
         if trusted {
             stopPolling()
+        } else if timer == nil {
+            startPolling()
         }
         if changed {
             TapLog.log("Accessibility permission changed: \(trusted)")
-            onChange?()
+            if Thread.isMainThread {
+                onChange?()
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onChange?()
+                }
+            }
         }
+        return trusted
     }
 
     func openSystemSettings() {

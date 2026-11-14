@@ -21,7 +21,7 @@ fail() { printf '\033[1;31m✖ %s\033[0m\n' "$1" >&2; exit 1; }
 
 # ---------------------------------------------------------------- version ---
 if [ ! -f "$REPO/version.txt" ]; then
-    printf '1.0.0\n1\n' > "$REPO/version.txt"
+    printf '1.0.2\n3\n' > "$REPO/version.txt"
 fi
 
 VERSION="$(sed -n '1p' "$REPO/version.txt" | tr -d '[:space:]')"
@@ -29,9 +29,11 @@ BUILD="$(sed -n '2p' "$REPO/version.txt" | tr -d '[:space:]')"
 
 BUMP=0
 DEV=0
+RESET_TCC=0
 for arg in "$@"; do
     [ "$arg" = "--bump" ] && BUMP=1
     [ "$arg" = "--dev" ] && DEV=1
+    [ "$arg" = "--reset-tcc" ] && RESET_TCC=1
 done
 
 if [ "$BUMP" = "1" ]; then
@@ -119,11 +121,14 @@ install_app() {
     log "Instalando en ${INSTALL_DIR}/${APP_NAME}.app"
     pkill -x "$APP_NAME" || true
     sleep 0.4
-    rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
-    if ! cp -R "$APP" "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null; then
-        log "copia directa falló, reintentando con ditto"
-        ditto "$APP" "${INSTALL_DIR}/${APP_NAME}.app" || fail "No se pudo instalar en /Applications"
+    if [ "$RESET_TCC" = "1" ]; then
+        log "Limpiando entrada previa de TCC Accesibilidad para ${BUNDLE_ID}"
+        tccutil reset Accessibility "$BUNDLE_ID" || true
     fi
+    defaults write "$BUNDLE_ID" tapCopyEnabled -bool true || true
+    defaults write "$BUNDLE_ID" didFixTerminationState_v102 -bool true || true
+    rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
+    ditto "$APP" "${INSTALL_DIR}/${APP_NAME}.app" || fail "No se pudo instalar en /Applications"
     xattr -dr com.apple.quarantine "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
     codesign --verify --deep --strict --verbose=2 "${INSTALL_DIR}/${APP_NAME}.app"
     open "${INSTALL_DIR}/${APP_NAME}.app"
@@ -141,7 +146,7 @@ DMG="$DIST/${APP_NAME}-${VERSION}.dmg"
 STAGE="$DIST/dmg-stage"
 rm -rf "$STAGE" "$DMG"
 mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
+ditto "$APP" "$STAGE/$APP_NAME.app"
 ln -s /Applications "$STAGE/Applications"
 
 log "Empaquetando ${APP_NAME}-${VERSION}.dmg"

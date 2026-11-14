@@ -4,10 +4,12 @@ import AppKit
 
 private enum PillPalette {
     static let carbon = NSColor(srgbRed: 0x1E / 255.0, green: 0x1F / 255.0, blue: 0x22 / 255.0, alpha: 0.96)
-    static let hover = NSColor(srgbRed: 0x2B / 255.0, green: 0x2D / 255.0, blue: 0x31 / 255.0, alpha: 0.98)
-    static let border = NSColor.white.withAlphaComponent(0.14)
+    static let hover = NSColor(srgbRed: 0x2E / 255.0, green: 0x30 / 255.0, blue: 0x36 / 255.0, alpha: 0.98)
+    static let border = NSColor.white.withAlphaComponent(0.15)
+    static let divider = NSColor.white.withAlphaComponent(0.10)
     static let icon = NSColor(srgbRed: 0xE4 / 255.0, green: 0xE4 / 255.0, blue: 0xE7 / 255.0, alpha: 1.0)
     static let label = NSColor(srgbRed: 0xF4 / 255.0, green: 0xF4 / 255.0, blue: 0xF5 / 255.0, alpha: 1.0)
+    static let accent = NSColor(srgbRed: 0x38 / 255.0, green: 0xBD / 255.0, blue: 0xF8 / 255.0, alpha: 1.0)
     static let success = NSColor(srgbRed: 0x10 / 255.0, green: 0xB9 / 255.0, blue: 0x81 / 255.0, alpha: 1.0)
 }
 
@@ -19,54 +21,111 @@ final class TapCopyPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-// MARK: - Interactive capsule
+// MARK: - Segment button
 
-final class PillView: NSView {
+private final class PillSegmentView: NSView {
 
+    private let swatchView = NSView()
     private let iconView = NSImageView()
-    private let label = NSTextField(labelWithString: "Copiar")
-    private var trackingAreaRef: NSTrackingArea?
+    private let labelField = NSTextField(labelWithString: "")
+    private var trackingRef: NSTrackingArea?
+    private var didPushCursor = false
 
-    var onClick: (() -> Void)?
+    let actionHandler: () -> Void
+    let computedWidth: CGFloat
 
-    private(set) var isCopiedState = false
+    init(
+        title: String?,
+        symbolName: String?,
+        swatchColor: NSColor? = nil,
+        tintColor: NSColor = PillPalette.label,
+        toolTipText: String? = nil,
+        actionHandler: @escaping () -> Void
+    ) {
+        self.actionHandler = actionHandler
 
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+        let font = NSFont.systemFont(ofSize: 12.0, weight: .medium)
+        let textWidth: CGFloat
+        if let title, !title.isEmpty {
+            textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
+        } else {
+            textWidth = 0
+        }
+
+        let hasSwatch = (swatchColor != nil)
+        let hasIcon = (symbolName != nil)
+        let hasText = (textWidth > 0)
+
+        var contentW: CGFloat = 0
+        if hasSwatch { contentW += 11 }
+        if hasSwatch && (hasIcon || hasText) { contentW += 5 }
+        if hasIcon { contentW += 13 }
+        if hasIcon && hasText { contentW += 5 }
+        contentW += textWidth
+
+        let horizontalPad: CGFloat = hasText ? 11.0 : 9.0
+        self.computedWidth = max(30.0, ceil(contentW + horizontalPad * 2))
+
+        super.init(frame: NSRect(x: 0, y: 0, width: computedWidth, height: 28.0))
+
         wantsLayer = true
-        layer?.cornerRadius = 16.0
+        layer?.cornerRadius = 13.0
         layer?.masksToBounds = true
-        layer?.backgroundColor = PillPalette.carbon.cgColor
-        layer?.borderWidth = 1.0
-        layer?.borderColor = PillPalette.border.cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
+        self.toolTip = toolTipText
 
-        iconView.imageScaling = .scaleProportionallyDown
-        iconView.contentTintColor = PillPalette.icon
-        iconView.image = NSImage(
-            systemSymbolName: "doc.on.doc",
-            accessibilityDescription: "Copiar"
-        )?.withSymbolConfiguration(
-            NSImage.SymbolConfiguration(pointSize: 11.5, weight: .semibold)
-        )
-        addSubview(iconView)
+        var cursorX = (computedWidth - contentW) / 2.0
 
-        label.font = .systemFont(ofSize: 12.5, weight: .medium)
-        label.textColor = PillPalette.label
-        label.alignment = .left
-        addSubview(label)
+        if let swatchColor {
+            swatchView.wantsLayer = true
+            swatchView.layer?.cornerRadius = 5.5
+            swatchView.layer?.backgroundColor = swatchColor.cgColor
+            swatchView.layer?.borderWidth = 1.0
+            swatchView.layer?.borderColor = NSColor.white.withAlphaComponent(0.35).cgColor
+            swatchView.frame = NSRect(x: cursorX, y: (28.0 - 11.0) / 2.0, width: 11.0, height: 11.0)
+            addSubview(swatchView)
+            cursorX += 11.0 + ((hasIcon || hasText) ? 5.0 : 0)
+        }
+
+        if let symbolName {
+            iconView.imageScaling = .scaleProportionallyDown
+            iconView.contentTintColor = (tintColor == PillPalette.label) ? PillPalette.icon : tintColor
+            iconView.image = NSImage(
+                systemSymbolName: symbolName,
+                accessibilityDescription: title ?? toolTipText
+            )?.withSymbolConfiguration(
+                NSImage.SymbolConfiguration(pointSize: 11.5, weight: .semibold)
+            )
+            iconView.frame = NSRect(x: cursorX, y: (28.0 - 13.0) / 2.0, width: 13.0, height: 13.0)
+            addSubview(iconView)
+            cursorX += 13.0 + (hasText ? 5.0 : 0)
+        }
+
+        if let title, !title.isEmpty {
+            labelField.stringValue = title
+            labelField.font = font
+            labelField.textColor = tintColor
+            labelField.alignment = .left
+            let intrinsic = labelField.intrinsicContentSize
+            labelField.frame = NSRect(
+                x: cursorX,
+                y: (28.0 - intrinsic.height) / 2.0,
+                width: textWidth + 4.0,
+                height: intrinsic.height
+            )
+            addSubview(labelField)
+        }
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    // MARK: Interaction
-
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let existing = trackingAreaRef {
+        if let existing = trackingRef {
             removeTrackingArea(existing)
         }
         let area = NSTrackingArea(
@@ -76,104 +135,123 @@ final class PillView: NSView {
             userInfo: nil
         )
         addTrackingArea(area)
-        trackingAreaRef = area
+        trackingRef = area
     }
 
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
+    func popCursorIfNeeded() {
+        if didPushCursor {
+            NSCursor.pop()
+            didPushCursor = false
+        }
     }
 
     override func mouseEntered(with event: NSEvent) {
-        guard !isCopiedState else { return }
-        NSCursor.pointingHand.push()
-        applyBackground(PillPalette.hover)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        NSCursor.pop()
-        guard !isCopiedState else { return }
-        applyBackground(PillPalette.carbon)
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onClick?()
-    }
-
-    private func applyBackground(_ color: NSColor) {
+        if !didPushCursor {
+            NSCursor.pointingHand.push()
+            didPushCursor = true
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer?.backgroundColor = color.cgColor
+        layer?.backgroundColor = PillPalette.hover.cgColor
         CATransaction.commit()
     }
 
-    // MARK: States
-
-    func setCopied(_ copied: Bool) {
-        isCopiedState = copied
-        if copied {
-            iconView.isHidden = true
-            label.stringValue = "✓ Copiado"
-            label.textColor = PillPalette.success
-            applyBackground(PillPalette.hover)
-        } else {
-            iconView.isHidden = false
-            label.stringValue = "Copiar"
-            label.textColor = PillPalette.label
-            applyBackground(PillPalette.carbon)
-        }
-        needsLayout = true
+    override func mouseExited(with event: NSEvent) {
+        popCursorIfNeeded()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.backgroundColor = NSColor.clear.cgColor
+        CATransaction.commit()
     }
 
-    // MARK: Layout
+    override func mouseDown(with event: NSEvent) {
+        popCursorIfNeeded()
+        actionHandler()
+    }
+}
 
-    static let horizontalPadding: CGFloat = 14.0
-    static let iconSpacing: CGFloat = 6.0
-    static let iconWidth: CGFloat = 13.0
-    static let height: CGFloat = 32.0
+// MARK: - Capsule bar container
 
-    static func size(for text: String, showsIcon: Bool) -> NSSize {
-        let font = NSFont.systemFont(ofSize: 12.5, weight: .medium)
-        let textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
-        let iconPart = showsIcon ? (iconWidth + iconSpacing) : 0
-        let width = max(96.0, horizontalPadding * 2 + iconPart + textWidth)
-        return NSSize(width: ceil(width), height: height)
+private final class ChameleonPillView: NSView {
+
+    static let barHeight: CGFloat = 34.0
+    private var segments: [PillSegmentView] = []
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = Self.barHeight / 2.0
+        layer?.masksToBounds = true
+        layer?.backgroundColor = PillPalette.carbon.cgColor
+        layer?.borderWidth = 1.0
+        layer?.borderColor = PillPalette.border.cgColor
     }
 
-    override func layout() {
-        super.layout()
-        let labelSize = label.intrinsicContentSize
-        let iconPart = iconView.isHidden ? 0 : (Self.iconWidth + Self.iconSpacing)
-        let totalWidth = iconPart + labelSize.width
-        var x = (bounds.width - totalWidth) / 2.0
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
-        if !iconView.isHidden {
-            iconView.frame = NSRect(x: x, y: (bounds.height - 13.0) / 2.0, width: Self.iconWidth, height: 13.0)
-            x += Self.iconWidth + Self.iconSpacing
-        } else {
-            iconView.frame = .zero
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    func popAllCursors() {
+        for seg in segments {
+            seg.popCursorIfNeeded()
+        }
+    }
+
+    func configure(with items: [PillSegmentView]) -> NSSize {
+        popAllCursors()
+        subviews.forEach { $0.removeFromSuperview() }
+        segments = items
+
+        let outerPad: CGFloat = 4.0
+        var cursorX: CGFloat = outerPad
+
+        for (idx, seg) in items.enumerated() {
+            if idx > 0 {
+                let divider = NSView(frame: NSRect(x: cursorX + 1.0, y: (Self.barHeight - 15.0) / 2.0, width: 1.0, height: 15.0))
+                divider.wantsLayer = true
+                divider.layer?.backgroundColor = PillPalette.divider.cgColor
+                addSubview(divider)
+                cursorX += 3.0
+            }
+            seg.frame = NSRect(x: cursorX, y: (Self.barHeight - 28.0) / 2.0, width: seg.computedWidth, height: 28.0)
+            addSubview(seg)
+            cursorX += seg.computedWidth
         }
 
-        label.frame = NSRect(
-            x: x,
-            y: (bounds.height - labelSize.height) / 2.0,
-            width: labelSize.width,
-            height: labelSize.height
+        let totalWidth = max(92.0, ceil(cursorX + outerPad))
+        return NSSize(width: totalWidth, height: Self.barHeight)
+    }
+
+    func configureSuccessMessage(_ text: String) -> NSSize {
+        let badge = PillSegmentView(
+            title: "✓ \(text)",
+            symbolName: nil,
+            tintColor: PillPalette.success,
+            actionHandler: {}
         )
+        return configure(with: [badge])
     }
 }
 
 // MARK: - Panel controller
 
-final class TapCopyPanelController {
+final class TapCopyPanelController: NSObject {
 
     static let shared = TapCopyPanelController()
 
     private var panel: TapCopyPanel?
-    private var pillView: PillView?
+    private var pillView: ChameleonPillView?
     private var fallbackText: String = ""
+    private var lastAnchor: NSPoint = .zero
     private var autoHideWorkItem: DispatchWorkItem?
+    private var presentationID: UInt64 = 0
+    private var isMenuOpen = false
 
-    private init() {}
+    private override init() {
+        super.init()
+    }
 
     var isVisible: Bool {
         panel?.isVisible ?? false
@@ -188,64 +266,334 @@ final class TapCopyPanelController {
         return panel.frame.insetBy(dx: -toleratedInset, dy: -toleratedInset).contains(screenPoint)
     }
 
-    // MARK: Show / hide
+    // MARK: - Show / Hide
 
-    func show(near point: NSPoint, fallbackText: String) {
-        guard SelectionMonitor.shared.isEnabled else { return }
+    func show(near point: NSPoint, fallbackText: String, force: Bool = false) {
+        guard force || SelectionMonitor.shared.isEnabled else { return }
         self.fallbackText = fallbackText
+        self.lastAnchor = point
 
-        autoHideWorkItem?.cancel()
-        let controller = self
-        let work = DispatchWorkItem { [weak controller] in
-            controller?.fadeOut()
-        }
-        autoHideWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: work)
-
-        let size = PillView.size(for: "Copiar", showsIcon: true)
-        let origin = clampedOrigin(anchor: point, size: size)
+        presentationID &+= 1
+        let currentID = presentationID
 
         let targetPanel = ensurePanel()
         guard let pill = pillView else { return }
-        pill.setCopied(false)
+
+        let segments = buildSegments(for: fallbackText, expectedID: currentID)
+        let size = pill.configure(with: segments)
+        let origin = WindowCollisionAvoidance.bestOrigin(
+            anchor: point,
+            pillSize: size,
+            ownPanelNumber: targetPanel.windowNumber
+        )
+
         pill.frame = NSRect(origin: .zero, size: size)
         targetPanel.setFrame(NSRect(origin: origin, size: size), display: true)
-        pill.needsLayout = true
-        pill.layoutSubtreeIfNeeded()
 
-        targetPanel.alphaValue = 0.0
+        scheduleAutoHide(after: 5.0, expectedID: currentID)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.0
+            targetPanel.animator().alphaValue = 0.0
+        }
         targetPanel.orderFrontRegardless()
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.08
             targetPanel.animator().alphaValue = 1.0
         }
+
+        // Deferred collision check at 160ms in case PopClip/DeepL/Grammarly popped up right after us.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
+            self?.repositionIfOverlapping(expectedID: currentID)
+        }
     }
 
     func hideImmediately() {
+        guard !isMenuOpen else { return }
+        presentationID &+= 1
         autoHideWorkItem?.cancel()
         autoHideWorkItem = nil
+        pillView?.popAllCursors()
         panel?.orderOut(nil)
         panel?.alphaValue = 1.0
-        pillView?.setCopied(false)
     }
 
-    private func fadeOut() {
+    private func scheduleAutoHide(after seconds: TimeInterval, expectedID: UInt64) {
+        autoHideWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.isMenuOpen else { return }
+            self.fadeOut(expectedID: expectedID)
+        }
+        autoHideWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    private func repositionIfOverlapping(expectedID: UInt64) {
+        guard presentationID == expectedID, let panel, panel.isVisible else { return }
+        guard WindowCollisionAvoidance.collidesWithExternalPopup(
+            frame: panel.frame,
+            ownPanelNumber: panel.windowNumber
+        ) else {
+            return
+        }
+        let newOrigin = WindowCollisionAvoidance.bestOrigin(
+            anchor: lastAnchor,
+            pillSize: panel.frame.size,
+            ownPanelNumber: panel.windowNumber
+        )
+        guard hypot(newOrigin.x - panel.frame.origin.x, newOrigin.y - panel.frame.origin.y) >= 4.0 else {
+            return
+        }
+        TapLog.log("Dodged external popup menu -> moved pill to (\(Int(newOrigin.x)), \(Int(newOrigin.y)))")
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.10
+            panel.animator().setFrameOrigin(newOrigin)
+        }
+    }
+
+    private func fadeOut(expectedID: UInt64) {
+        guard presentationID == expectedID, let panel, panel.isVisible else { return }
         autoHideWorkItem = nil
-        guard let panel, panel.isVisible else { return }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             panel.animator().alphaValue = 0.0
         } completionHandler: { [weak self] in
-            self?.panel?.orderOut(nil)
-            self?.panel?.alphaValue = 1.0
-            self?.pillView?.setCopied(false)
+            guard let self, self.presentationID == expectedID else { return }
+            self.pillView?.popAllCursors()
+            self.panel?.orderOut(nil)
+            self.panel?.alphaValue = 1.0
         }
     }
 
-    // MARK: Copy action
+    // MARK: - Chameleon Segments Builder
 
-    private func performCopy() {
+    private func buildSegments(for text: String, expectedID: UInt64) -> [PillSegmentView] {
+        var items: [PillSegmentView] = []
+
+        // Primary action: Copy (Cmd+C + AX fallback)
+        items.append(
+            PillSegmentView(
+                title: "Copiar",
+                symbolName: "doc.on.doc",
+                toolTipText: "Copiar selección",
+                actionHandler: { [weak self] in
+                    self?.performStandardCopy(expectedID: expectedID)
+                }
+            )
+        )
+
+        guard SelectionMonitor.shared.isChameleonModeEnabled else {
+            return items
+        }
+
+        // Function 1: Contextual Smart Action (URL / Path / Color Swatch / Math)
+        let contextual = ChameleonAnalyzer.detectContextualMatch(in: text)
+        var hidesWebSearch = false
+
+        if let contextual {
+            switch contextual {
+            case let .url(url, label):
+                hidesWebSearch = true
+                items.append(
+                    PillSegmentView(
+                        title: label,
+                        symbolName: "arrow.up.right.square",
+                        tintColor: PillPalette.accent,
+                        toolTipText: url.absoluteString,
+                        actionHandler: { [weak self] in
+                            NSWorkspace.shared.open(url)
+                            self?.hideImmediately()
+                        }
+                    )
+                )
+
+            case let .filePath(fileURL, label):
+                hidesWebSearch = true
+                items.append(
+                    PillSegmentView(
+                        title: label,
+                        symbolName: "folder",
+                        tintColor: PillPalette.accent,
+                        toolTipText: fileURL.path,
+                        actionHandler: { [weak self] in
+                            NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+                            self?.hideImmediately()
+                        }
+                    )
+                )
+
+            case let .color(swatch, convertedValue, badgeTitle):
+                hidesWebSearch = true
+                items.append(
+                    PillSegmentView(
+                        title: badgeTitle,
+                        symbolName: nil,
+                        swatchColor: swatch,
+                        toolTipText: "Copiar \(convertedValue)",
+                        actionHandler: { [weak self] in
+                            self?.writeToPasteboard(convertedValue, feedback: convertedValue, expectedID: expectedID)
+                        }
+                    )
+                )
+
+            case let .math(formattedResult):
+                items.append(
+                    PillSegmentView(
+                        title: "= \(formattedResult)",
+                        symbolName: nil,
+                        tintColor: PillPalette.accent,
+                        toolTipText: "Copiar resultado \(formattedResult)",
+                        actionHandler: { [weak self] in
+                            self?.writeToPasteboard(formattedResult, feedback: formattedResult, expectedID: expectedID)
+                        }
+                    )
+                )
+            }
+        }
+
+        // Function 2a: Clipboard Sanitation (Plain clean text)
+        items.append(
+            PillSegmentView(
+                title: "Plano",
+                symbolName: nil,
+                toolTipText: "Copiar como texto plano limpio (sin estilos ni saltos basura)",
+                actionHandler: { [weak self] in
+                    guard let self else { return }
+                    let clean = ChameleonAnalyzer.sanitizedPlainText(self.fallbackText)
+                    self.writeToPasteboard(clean, feedback: "Texto plano", expectedID: expectedID)
+                }
+            )
+        )
+
+        // Function 2b: Quick Transform & Stats Menu (`Aa`)
+        var aaSegmentRef: PillSegmentView?
+        let aaSegment = PillSegmentView(
+            title: "Aa",
+            symbolName: nil,
+            toolTipText: "Transformar formato, código y conteo de palabras",
+            actionHandler: { [weak self] in
+                guard let self, let anchorSeg = aaSegmentRef else { return }
+                self.presentTransformMenu(from: anchorSeg, expectedID: expectedID)
+            }
+        )
+        aaSegmentRef = aaSegment
+        items.append(aaSegment)
+
+        // Function 3: Instant Web Search without losing focus
+        if !hidesWebSearch {
+            items.append(
+                PillSegmentView(
+                    title: nil,
+                    symbolName: "magnifyingglass",
+                    toolTipText: "Buscar selección en Google",
+                    actionHandler: { [weak self] in
+                        guard let self else { return }
+                        if let url = ChameleonAnalyzer.searchURL(for: self.fallbackText, engine: .google) {
+                            NSWorkspace.shared.open(url)
+                        }
+                        self.hideImmediately()
+                    }
+                )
+            )
+        }
+
+        // Function 4: Floating Pin / Micro-Shelf
+        items.append(
+            PillSegmentView(
+                title: nil,
+                symbolName: "pin",
+                toolTipText: "Fijar fragmento en estante flotante",
+                actionHandler: { [weak self] in
+                    guard let self else { return }
+                    let pos = self.panel?.frame.origin ?? NSEvent.mouseLocation
+                    self.hideImmediately()
+                    PinShelfController.shared.pin(text: self.fallbackText, near: pos)
+                }
+            )
+        )
+
+        return items
+    }
+
+    // MARK: - Actions & Transform Menu
+
+    private func presentTransformMenu(from segment: PillSegmentView, expectedID: UInt64) {
+        autoHideWorkItem?.cancel()
+        isMenuOpen = true
+
+        let menu = NSMenu(title: "Transformar")
+        menu.appearance = NSAppearance(named: .darkAqua)
+
+        let statsItem = NSMenuItem(
+            title: ChameleonAnalyzer.statsLine(for: fallbackText),
+            action: nil,
+            keyEquivalent: ""
+        )
+        statsItem.isEnabled = false
+        menu.addItem(statsItem)
+        menu.addItem(.separator())
+
+        let transforms: [(String, ChameleonAnalyzer.TextTransformCase)] = [
+            ("MAYÚSCULAS", .upper),
+            ("minúsculas", .lower),
+            ("Tipo Título", .title),
+            ("snake_case", .snake),
+            ("camelCase", .camel),
+            ("Copiar como código Markdown (```)", .markdownBlock)
+        ]
+
+        for (index, entry) in transforms.enumerated() {
+            let item = NSMenuItem(title: entry.0, action: #selector(applyTransformMenuItem(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            menu.addItem(item)
+        }
+
+        if ChameleonAnalyzer.looksLikeCode(fallbackText) {
+            menu.addItem(.separator())
+            let ghItem = NSMenuItem(title: "Buscar código en GitHub", action: #selector(searchGitHubMenuItem(_:)), keyEquivalent: "")
+            ghItem.target = self
+            menu.addItem(ghItem)
+
+            let soItem = NSMenuItem(title: "Buscar en StackOverflow", action: #selector(searchStackOverflowMenuItem(_:)), keyEquivalent: "")
+            soItem.target = self
+            menu.addItem(soItem)
+        }
+
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: segment)
+        isMenuOpen = false
+
+        if presentationID == expectedID, panel?.isVisible == true {
+            scheduleAutoHide(after: 2.5, expectedID: expectedID)
+        }
+    }
+
+    @objc private func applyTransformMenuItem(_ sender: NSMenuItem) {
+        let modes: [ChameleonAnalyzer.TextTransformCase] = [.upper, .lower, .title, .snake, .camel, .markdownBlock]
+        guard sender.tag >= 0, sender.tag < modes.count else { return }
+        let transformed = ChameleonAnalyzer.transform(fallbackText, mode: modes[sender.tag])
+        isMenuOpen = false
+        writeToPasteboard(transformed, feedback: "Copiado", expectedID: presentationID)
+    }
+
+    @objc private func searchGitHubMenuItem(_ sender: NSMenuItem) {
+        isMenuOpen = false
+        if let url = ChameleonAnalyzer.searchURL(for: fallbackText, engine: .github) {
+            NSWorkspace.shared.open(url)
+        }
+        hideImmediately()
+    }
+
+    @objc private func searchStackOverflowMenuItem(_ sender: NSMenuItem) {
+        isMenuOpen = false
+        if let url = ChameleonAnalyzer.searchURL(for: fallbackText, engine: .stackOverflow) {
+            NSWorkspace.shared.open(url)
+        }
+        hideImmediately()
+    }
+
+    private func performStandardCopy(expectedID: UInt64) {
         autoHideWorkItem?.cancel()
         autoHideWorkItem = nil
 
@@ -254,7 +602,7 @@ final class TapCopyPanelController {
         let source = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
         sendCommandC()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.085) { [weak self] in
             guard let self else { return }
             let changed = pasteboard.changeCount > initialChangeCount
             if !changed {
@@ -262,23 +610,32 @@ final class TapCopyPanelController {
                 pasteboard.setString(self.fallbackText, forType: .string)
             }
             TapLog.log("Copy requested for \(source) — cmdC=\(changed) fallback=\(!changed) chars=\(self.fallbackText.count)")
-            self.showCopiedFeedback()
+            self.showSuccessFeedback("Copiado", expectedID: expectedID)
         }
     }
 
-    private func showCopiedFeedback() {
-        guard let panel, let pill = pillView else { return }
-        pill.setCopied(true)
+    private func writeToPasteboard(_ string: String, feedback: String, expectedID: UInt64) {
+        autoHideWorkItem?.cancel()
+        autoHideWorkItem = nil
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(string, forType: .string)
+        showSuccessFeedback(feedback, expectedID: expectedID)
+    }
 
-        let size = PillView.size(for: "✓ Copiado", showsIcon: false)
-        let origin = clampedOrigin(anchor: panel.frame.origin, size: size, isOrigin: true)
-        panel.setFrame(NSRect(origin: origin, size: size), display: true)
-        pill.frame = NSRect(origin: .zero, size: size)
-        pill.needsLayout = true
-        pill.layoutSubtreeIfNeeded()
+    private func showSuccessFeedback(_ message: String, expectedID: UInt64) {
+        guard presentationID == expectedID, let panel, let pill = pillView else { return }
+        let newSize = pill.configureSuccessMessage(message)
+        let centeredX = panel.frame.midX - (newSize.width / 2.0)
+        let screen = NSScreen.screens.first { NSMouseInRect(panel.frame.origin, $0.frame, false) } ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let clampedX = min(Swift.max(centeredX, visible.minX + 8.0), Swift.max(visible.minX + 8.0, visible.maxX - newSize.width - 8.0))
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) { [weak self] in
-            self?.fadeOut()
+        pill.frame = NSRect(origin: .zero, size: newSize)
+        panel.setFrame(NSRect(x: clampedX, y: panel.frame.origin.y, width: newSize.width, height: newSize.height), display: true)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
+            self?.fadeOut(expectedID: expectedID)
         }
     }
 
@@ -295,11 +652,11 @@ final class TapCopyPanelController {
         up.post(tap: .cghidEventTap)
     }
 
-    // MARK: Geometry
+    // MARK: - Panel Setup
 
     private func ensurePanel() -> TapCopyPanel {
         if let panel { return panel }
-        let rect = NSRect(x: 0, y: 0, width: 96, height: PillView.height)
+        let rect = NSRect(x: 0, y: 0, width: 120, height: ChameleonPillView.barHeight)
         let newPanel = TapCopyPanel(
             contentRect: rect,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -319,37 +676,12 @@ final class TapCopyPanelController {
         newPanel.animationBehavior = .none
         newPanel.ignoresMouseEvents = false
 
-        let view = PillView(frame: rect)
+        let view = ChameleonPillView(frame: rect)
         view.autoresizingMask = [.width, .height]
-        view.onClick = { [weak self] in
-            self?.performCopy()
-        }
         newPanel.contentView = view
 
         panel = newPanel
         pillView = view
         return newPanel
-    }
-
-    /// Places the pill at (mouse + 12, mouse + 14) and clamps it inside the
-    /// visible frame of the screen under the cursor, 8 pt margin on all sides.
-    private func clampedOrigin(anchor: NSPoint, size: NSSize, isOrigin: Bool = false) -> NSPoint {
-        let primary = NSPoint(x: anchor.x + (isOrigin ? 0 : 12), y: anchor.y + (isOrigin ? 0 : 14))
-        let margin: CGFloat = 8.0
-        let screen = screenContaining(point: isOrigin ? anchor : NSEvent.mouseLocation) ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return primary }
-
-        let lowerX = visible.minX + margin
-        let lowerY = visible.minY + margin
-        let upperX = Swift.max(lowerX, visible.maxX - size.width - margin)
-        let upperY = Swift.max(lowerY, visible.maxY - size.height - margin)
-        return NSPoint(
-            x: min(Swift.max(primary.x, lowerX), upperX),
-            y: min(Swift.max(primary.y, lowerY), upperY)
-        )
-    }
-
-    private func screenContaining(point: NSPoint) -> NSScreen? {
-        NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? NSScreen.main
     }
 }

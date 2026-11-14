@@ -5,24 +5,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusBarController: StatusBarController?
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var appObservers: [NSObjectProtocol] = []
 
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Dock policy: first launch (hideDockIcon == false) stays .regular so the
-        // TCC Accessibility prompt is easy to accept. The toggle switches live.
-        let hideDock = UserDefaults.standard.bool(forKey: "hideDockIcon")
+        let defaults = UserDefaults.standard
+
+        // One-time self-heal: v1.0.1 saved `tapCopyEnabled = false` on every quit/reboot.
+        if !defaults.bool(forKey: "didFixTerminationState_v102") {
+            defaults.set(true, forKey: "didFixTerminationState_v102")
+            defaults.set(true, forKey: "tapCopyEnabled")
+        }
+
+        let hideDock = defaults.bool(forKey: "hideDockIcon")
         NSApp.setActivationPolicy(hideDock ? .accessory : .regular)
 
         buildMainMenu()
 
-        // Signature / identity diagnostics (Team ID YH6W55MP95).
         let signature = SignatureVerifier.shared.result
 
         let monitor = SelectionMonitor.shared
-        let saved = UserDefaults.standard.object(forKey: "tapCopyEnabled") as? Bool
-        monitor.isEnabled = saved ?? true
-        monitor.activate()
+        let saved = defaults.object(forKey: "tapCopyEnabled") as? Bool
+        monitor.configureAtLaunch(enabled: saved ?? true)
 
         let statusBar = StatusBarController(
             isEnabled: { SelectionMonitor.shared.isEnabled },
@@ -36,7 +41,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar.install()
 
         PermissionManager.shared.onChange = { [weak self] in
+            if PermissionManager.shared.isTrusted && SelectionMonitor.shared.isEnabled {
+                SelectionMonitor.shared.reinstallMonitors()
+            }
             self?.statusBarController?.refreshAppearance()
+            AboutWindowController.shared.refreshIfVisible()
         }
         PermissionManager.shared.requestIfNeeded()
 
@@ -44,11 +53,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
 
-        let center = NotificationCenter.default
+        let wsCenter = NSWorkspace.shared.notificationCenter
         workspaceObservers.append(
-            center.addObserver(forName: NSWorkspace.didTerminateApplicationNotification,
-                               object: nil, queue: .main) { _ in
+            wsCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+                                 object: nil, queue: .main) { notification in
+                if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+                    SelectionMonitor.shared.noteActivatedApplication(app)
+                }
+            }
+        )
+        workspaceObservers.append(
+            wsCenter.addObserver(forName: NSWorkspace.didTerminateApplicationNotification,
+                                 object: nil, queue: .main) { _ in
                 SelectionMonitor.shared.resetApplicationCache()
+            }
+        )
+        workspaceObservers.append(
+            wsCenter.addObserver(forName: NSWorkspace.didWakeNotification,
+                                 object: nil, queue: .main) { [weak self] _ in
+                TapLog.log("System woke from sleep — refreshing TCC and event monitors")
+                _ = PermissionManager.shared.refresh()
+                SelectionMonitor.shared.reinstallMonitors()
+                self?.statusBarController?.refreshAppearance()
+            }
+        )
+
+        appObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didChangeScreenParametersNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                TapCopyPanelController.shared.hideImmediately()
             }
         )
 
@@ -60,12 +96,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         TapLog.log("Launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?") — accessibilityTrusted=\(PermissionManager.shared.isTrusted) enabled=\(SelectionMonitor.shared.isEnabled)")
 
-        // Internal visual smoke test: TapCopy --demo-pill
         if CommandLine.arguments.contains("--demo-pill") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 TapCopyPanelController.shared.show(
                     near: NSEvent.mouseLocation,
-                    fallbackText: "Texto de demostración"
+                    fallbackText: "145 * 1.16",
+                    force: true
                 )
             }
         }
@@ -77,12 +113,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !SelectionMonitor.shared.isEnabled {
+            SelectionMonitor.shared.setEnabled(true)
+        }
+        _ = PermissionManager.shared.refresh()
+        statusBarController?.refreshAppearance()
+        AboutWindowController.shared.show()
+        return true
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        SelectionMonitor.shared.isEnabled = false
+        SelectionMonitor.shared.shutdown()
+        PinShelfController.shared.closeAll()
+
+        let wsCenter = NSWorkspace.shared.notificationCenter
         for observer in workspaceObservers {
-            NotificationCenter.default.removeObserver(observer)
+            wsCenter.removeObserver(observer)
         }
         workspaceObservers.removeAll()
+
+        for observer in appObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        appObservers.removeAll()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -137,7 +191,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
 
-        // Standard Edit menu (useful inside the About window for copy/paste).
         let editMenuItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edición")
         editMenu.addItem(NSMenuItem(title: "Deshacer", action: Selector(("undo:")), keyEquivalent: "z"))

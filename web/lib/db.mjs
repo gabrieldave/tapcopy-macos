@@ -61,6 +61,20 @@ export async function migrate() {
       UNIQUE (license_id, device_id)
     );
 
+    CREATE TABLE IF NOT EXISTS hardware_trials (
+      device_id TEXT PRIMARY KEY,
+      first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+      app_version TEXT,
+      sync_count INT NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS stripe_events (
+      event_id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     CREATE TABLE IF NOT EXISTS admin_audit (
       id BIGSERIAL PRIMARY KEY,
       email TEXT,
@@ -71,6 +85,12 @@ export async function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_activations_license ON license_activations (license_id);
     CREATE INDEX IF NOT EXISTS idx_licenses_status ON licenses (status);
+    CREATE INDEX IF NOT EXISTS idx_hardware_trials_last_seen ON hardware_trials (last_seen);
+
+    ALTER TABLE licenses ADD COLUMN IF NOT EXISTS key_hash TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_licenses_key_hash ON licenses (key_hash) WHERE key_hash IS NOT NULL;
+    -- The stored key is now masked: uniqueness lives in key_hash, not here.
+    ALTER TABLE licenses DROP CONSTRAINT IF EXISTS licenses_key_key;
   `);
 }
 

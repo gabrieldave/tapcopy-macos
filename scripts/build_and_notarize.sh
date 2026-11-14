@@ -103,7 +103,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSAccessibilityUsageDescription</key>
     <string>TapCopy necesita Accesibilidad para leer el texto que seleccionas con el ratón y mostrarte la píldora de copiar. Nunca envía ni almacena tu contenido.</string>
     <key>NSHumanReadableCopyright</key>
-    <string>© 2026 BLACK EYE — David DEL RIO COLIN. Uso interno.</string>
+    <string>© 2026 BLACK EYE — David DEL RIO COLIN. All rights reserved.</string>
 </dict>
 </plist>
 PLIST

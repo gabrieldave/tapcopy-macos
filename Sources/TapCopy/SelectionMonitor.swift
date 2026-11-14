@@ -270,9 +270,10 @@ final class SelectionMonitor {
             return
         }
         guard LicenseManager.shared.canUseApp else {
-            TapLog.log("Read skipped: trial expired and no license")
+            TapLog.log("Read skipped: licensing gate (expired or clock tampered)")
+            let state = LicenseManager.shared.windowState()
             DispatchQueue.main.async {
-                LicenseWindowController.shared.show(.trialExpired)
+                LicenseWindowController.shared.show(state)
             }
             return
         }

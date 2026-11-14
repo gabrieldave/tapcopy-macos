@@ -9,6 +9,7 @@ enum LicenseState: Equatable {
     case trialActive(daysLeft: Int, day: Int)
     case trialEndingSoon(daysLeft: Int, day: Int)
     case trialExpired
+    case clockTampered
     case activating
     case licensed(plan: LicensePlan, maskedKey: String)
 }
@@ -255,6 +256,16 @@ final class LicenseWindowController: NSObject, NSTextFieldDelegate {
             secondaryButton.title = t("Quit TapCopy", "Salir de TapCopy")
             primaryButton.title = t("Activate", "Activar")
             validateKey()
+        case .clockTampered:
+            subtitleLabel.stringValue = t(
+                "System clock change detected · restore automatic date",
+                "Cambio de reloj detectado · restaura la fecha automática"
+            )
+            subtitleLabel.textColor = Palette.danger
+            setProgress(day: M.trialDays, color: Palette.danger)
+            secondaryButton.title = t("Quit TapCopy", "Salir de TapCopy")
+            primaryButton.title = t("Activate", "Activar")
+            validateKey()
         case .activating:
             spinner.startAnimation(nil)
             [keyField, secondaryButton, primaryButton, buyButton].forEach { ($0 as? NSControl)?.isEnabled = false }
@@ -339,7 +350,7 @@ final class LicenseWindowController: NSObject, NSTextFieldDelegate {
 
     @objc private func secondaryTapped() {
         switch state {
-        case .trialExpired: onQuit?()
+        case .trialExpired, .clockTampered: onQuit?()
         case .licensed:
             service?.deactivate { _ in }
             window?.close()

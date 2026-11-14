@@ -26,6 +26,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let signature = SignatureVerifier.shared.result
 
+        // Layer 1 — a modified or re-signed .app must never reach the monitors.
+        if Bundle.main.bundleURL.pathExtension == "app" && !signature.isValid {
+            TapLog.log("Signature gate blocked launch: team=\(signature.teamIdentifier ?? "none") id=\(signature.signingIdentifier ?? "none")")
+            let spanish = Locale.preferredLanguages.first?.hasPrefix("es") ?? true
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = spanish ? "Firma de TapCopy no válida" : "Invalid TapCopy signature"
+            alert.informativeText = spanish
+                ? "La firma oficial de TapCopy (YH6W55MP95) no es válida. La app pudo haber sido alterada o re-firmada fuera del equipo autorizado. Descarga una copia oficial desde tapcopy.iareal.net."
+                : "The official TapCopy signature (YH6W55MP95) is not valid. The app may have been altered or re-signed outside the authorized team. Download an official copy from tapcopy.iareal.net."
+            alert.addButton(withTitle: spanish ? "Salir" : "Quit")
+            alert.runModal()
+            NSApp.terminate(nil)
+            return
+        }
+
         let monitor = SelectionMonitor.shared
         let saved = defaults.object(forKey: "tapCopyEnabled") as? Bool
         monitor.configureAtLaunch(enabled: saved ?? true)
@@ -55,9 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LicenseWindowController.shared.isSpanish = Locale.preferredLanguages.first?.hasPrefix("es") ?? true
         LicenseWindowController.shared.onQuit = { NSApp.terminate(nil) }
 
+        LicenseManager.shared.startClock()
         if !LicenseManager.shared.canUseApp {
+            let state = LicenseManager.shared.windowState()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                LicenseWindowController.shared.show(.trialExpired)
+                LicenseWindowController.shared.show(state)
             }
         }
 
@@ -70,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.reminderTimer = reminderTimer
 
         AppUpdateChecker.shared.checkSilentlyIfDue()
+        LicenseManager.shared.syncTrialIfNeeded()
 
         if !hideDock {
             NSApp.activate(ignoringOtherApps: true)
@@ -96,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 TapLog.log("System woke from sleep — refreshing TCC and event monitors")
                 _ = PermissionManager.shared.refresh()
                 SelectionMonitor.shared.reinstallMonitors()
+                LicenseManager.shared.handleWake()
                 self?.statusBarController?.refreshAppearance()
             }
         )

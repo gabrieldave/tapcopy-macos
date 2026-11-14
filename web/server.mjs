@@ -11,7 +11,9 @@ import { sendMail, welcomeMail, receiptMail } from './lib/mail.mjs';
 import { PLANS, createCheckout, verifyWebhook, notifyN8n } from './lib/stripe.mjs';
 import {
   ADMIN_EMAIL, authUrl, exchangeCode, readSession, sessionCookie, clearCookie, stateCookie,
+  readOAuthState, clearStateCookie,
 } from './lib/auth.mjs';
+import { clientIp, rateLimiter, hashLicenseKey, maskKey } from './lib/security.mjs';
 import { resolveRedirect, VARY_VALUE } from './functions/_lib/lang.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -19,8 +21,8 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const STORAGE_DIR = process.env.STORAGE_DIR || '/app/storage';
 const ORIGIN = process.env.PUBLIC_URL || 'https://tapcopy.iareal.net';
 const PORT = Number(process.env.PORT || 3000);
-const VERSION = process.env.APP_VERSION || '1.1.0';
-const BUILD = Number(process.env.APP_BUILD || 5);
+const VERSION = process.env.APP_VERSION || '1.1.1';
+const BUILD = Number(process.env.APP_BUILD || 6);
 const DMG_NAME = `TapCopy-${VERSION}.dmg`;
 
 const MIME = {
@@ -84,9 +86,19 @@ function send(res, status, body, headers = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
     ...headers,
   });
   res.end(payload);
+}
+
+/// Fixed-window IP limiter (10 attempts / 15 min per bucket).
+function enforceRateLimit(req, res, bucket) {
+  const verdict = rateLimiter.check(`${clientIp(req)}:${bucket}`);
+  if (verdict.allowed) return true;
+  send(res, 429, { error: 'rate_limited' }, { 'Retry-After': String(verdict.retryAfter) });
+  return false;
 }
 
 async function readBody(req, limit = 1_000_000) {
@@ -112,8 +124,6 @@ function generateKey() {
   };
   return `TCOPY-${group()}-${group()}-${group()}`;
 }
-
-const maskKey = (key) => `${key.slice(0, 6)}••••-••••-${key.slice(-4)}`;
 
 // ------------------------------------------------------- key at rest (AES) ---
 // Licenses are still looked up by their literal TCOPY-… value (the app posts it
@@ -148,34 +158,56 @@ function decryptLicenseKey(blob) {
   }
 }
 
-/// Adds `key_encrypted` on existing databases and backfills it from the literal
-/// key column (only for rows created before this column existed).
+/// Backfills `key_hash` (SHA-256) and `key_encrypted` (AES-256-GCM) on existing
+/// databases. Only after both are confirmed does it replace `licenses.key` with
+/// the masked value, so a SQL dump can never expose a usable key.
 async function ensureKeyEncryption() {
   try {
     await db.query('ALTER TABLE licenses ADD COLUMN IF NOT EXISTS key_encrypted TEXT');
-    if (!ENC_KEY) {
-      console.warn('license encryption disabled: missing SESSION_SECRET');
-      return;
-    }
-    const pending = await db.query('SELECT id, key FROM licenses WHERE key_encrypted IS NULL');
+    await db.query('ALTER TABLE licenses ADD COLUMN IF NOT EXISTS key_hash TEXT');
+    const pending = await db.query('SELECT id, key, key_hash, key_encrypted FROM licenses');
+    let hashed = 0;
+    let masked = 0;
     for (const row of pending.rows) {
-      const blob = encryptLicenseKey(row.key);
-      if (blob) await db.query('UPDATE licenses SET key_encrypted = $1 WHERE id = $2', [blob, row.id]);
+      const raw = String(row.key || '');
+      const alreadyMasked = raw.includes('••••');
+      let hash = row.key_hash || null;
+      let cipher = row.key_encrypted || null;
+      if (!hash && !alreadyMasked && KEY_RE.test(raw)) hash = hashLicenseKey(raw);
+      if (!cipher && !alreadyMasked && KEY_RE.test(raw) && ENC_KEY) cipher = encryptLicenseKey(raw);
+      if (!hash) continue; // unrecoverable legacy row: leave it untouched
+      if (!row.key_hash) {
+        await db.query('UPDATE licenses SET key_hash = $1 WHERE id = $2', [hash, row.id]);
+        hashed += 1;
+      }
+      if (!row.key_encrypted && cipher) {
+        await db.query('UPDATE licenses SET key_encrypted = $1 WHERE id = $2', [cipher, row.id]);
+      }
+      if (!alreadyMasked && cipher) {
+        await db.query('UPDATE licenses SET key = $1 WHERE id = $2', [maskKey(raw), row.id]);
+        masked += 1;
+      }
     }
-    if (pending.rowCount) console.log(`license keys encrypted: ${pending.rowCount}`);
+    if (hashed || masked) console.log(`license keys hashed: ${hashed}, masked: ${masked}`);
+    if (!ENC_KEY) console.warn('license encryption disabled: missing SESSION_SECRET (keys stay unmasked)');
   } catch (err) {
     console.error('key encryption init failed', err.message);
   }
 }
 
 /// Full key for an admin action: prefer the encrypted copy, fall back to the
-/// legacy plaintext column for rows that predate the backfill.
+/// legacy plaintext column for rows that predate the backfill. Masked values
+/// are never returned as a "full" key.
 function fullLicenseKey(row) {
-  return decryptLicenseKey(row.key_encrypted) || row.key || null;
+  const plain = decryptLicenseKey(row.key_encrypted);
+  if (plain) return plain;
+  const legacy = String(row.key || '');
+  return legacy && !legacy.includes('••••') ? legacy : null;
 }
 
 // ------------------------------------------------------------------ trial ---
 async function handleTrial(req, res) {
+  if (!enforceRateLimit(req, res, 'trial')) return;
   const raw = await readBody(req);
   const type = req.headers['content-type'] || '';
   let email = null;
@@ -214,6 +246,39 @@ async function handleTrial(req, res) {
     return res.end();
   }
   send(res, 200, { downloadUrl: '/download/TapCopy.dmg' });
+}
+
+// ----------------------------------------------------------- trial sync ---
+async function handleTrialSync(req, res) {
+  if (!enforceRateLimit(req, res, 'trial')) return;
+
+  let body;
+  try {
+    body = JSON.parse((await readBody(req, 8 * 1024)) || '{}');
+  } catch {
+    return send(res, 413, { error: 'payload_too_large' });
+  }
+
+  const deviceId = String(body.deviceId || '');
+  const appVersion = typeof body.appVersion === 'string' ? body.appVersion.slice(0, 32) : null;
+  if (!/^[a-f0-9]{64}$/.test(deviceId)) return send(res, 400, { error: 'invalid_device' });
+
+  const result = await db.query(
+    `INSERT INTO hardware_trials (device_id, app_version)
+     VALUES ($1, $2)
+     ON CONFLICT (device_id) DO UPDATE SET
+       last_seen = now(),
+       app_version = COALESCE(EXCLUDED.app_version, hardware_trials.app_version),
+       sync_count = hardware_trials.sync_count + 1
+     RETURNING EXTRACT(EPOCH FROM first_seen)::double precision AS first_seen,
+               EXTRACT(EPOCH FROM now())::double precision AS server_now`,
+    [deviceId, appVersion],
+  );
+
+  send(res, 200, {
+    firstSeen: result.rows[0].first_seen,
+    serverNow: result.rows[0].server_now,
+  }, { 'Cache-Control': 'no-store' });
 }
 
 // -------------------------------------------------------------- download ---
@@ -293,6 +358,14 @@ async function handleStripeWebhook(req, res) {
   const check = verifyWebhook(raw, req.headers['stripe-signature']);
   if (!check.ok) return send(res, 400, { error: check.reason });
   const event = check.event;
+  if (!event.id) return send(res, 400, { error: 'invalid_event' });
+
+  const claimed = await db.query(
+    `INSERT INTO stripe_events (event_id, event_type) VALUES ($1, $2)
+     ON CONFLICT (event_id) DO NOTHING RETURNING event_id`,
+    [event.id, event.type],
+  );
+  if (claimed.rowCount === 0) return send(res, 200, { received: true, duplicate: true });
 
   try {
     if (event.type === 'checkout.session.completed') {
@@ -312,8 +385,9 @@ async function handleStripeWebhook(req, res) {
         );
         const key = generateKey();
         await db.query(
-          'INSERT INTO licenses (key, key_encrypted, plan, seats, email, order_id, issued_by) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [key, encryptLicenseKey(key), plan, seats, email, order.rows[0].id, 'stripe'],
+          `INSERT INTO licenses (key, key_hash, key_encrypted, plan, seats, email, order_id, issued_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [maskKey(key), hashLicenseKey(key), encryptLicenseKey(key), plan, seats, email, order.rows[0].id, 'stripe'],
         );
         if (email) {
           const mail = receiptMail(lang, { key, plan, seats, amount: (amount / 100).toFixed(2) });
@@ -343,7 +417,9 @@ async function handleStripeWebhook(req, res) {
       }
     }
   } catch (err) {
+    await db.query('DELETE FROM stripe_events WHERE event_id = $1', [event.id]).catch(() => {});
     console.error('webhook processing error', err.message);
+    return send(res, 500, { error: 'webhook_failed' });
   }
   send(res, 200, { received: true });
 }
@@ -352,6 +428,7 @@ async function handleStripeWebhook(req, res) {
 const KEY_RE = /^TCOPY-[A-Z0-9]{4}(-[A-Z0-9]{4}){2}$/;
 
 async function handleActivate(req, res) {
+  if (!enforceRateLimit(req, res, 'license')) return;
   const body = JSON.parse((await readBody(req)) || '{}');
   const key = String(body.key || '').trim().toUpperCase();
   const deviceId = String(body.deviceId || '').trim();
@@ -359,7 +436,7 @@ async function handleActivate(req, res) {
 
   if (!KEY_RE.test(key) || !deviceId) return send(res, 400, { error: 'invalid_key' });
 
-  const found = await db.query('SELECT * FROM licenses WHERE key = $1', [key]);
+  const found = await db.query('SELECT * FROM licenses WHERE key_hash = $1 OR key = $2', [hashLicenseKey(key), key]);
   if (found.rowCount === 0) return send(res, 404, { error: 'invalid_key' });
   const license = found.rows[0];
   if (license.status === 'refunded') return send(res, 409, { error: 'refunded' });
@@ -387,11 +464,12 @@ async function handleActivate(req, res) {
 }
 
 async function handleDeactivate(req, res) {
+  if (!enforceRateLimit(req, res, 'license')) return;
   const body = JSON.parse((await readBody(req)) || '{}');
   const key = String(body.key || '').trim().toUpperCase();
   const deviceId = String(body.deviceId || '').trim();
   if (!KEY_RE.test(key) || !deviceId) return send(res, 400, { error: 'invalid_key' });
-  const found = await db.query('SELECT id FROM licenses WHERE key = $1', [key]);
+  const found = await db.query('SELECT id FROM licenses WHERE key_hash = $1 OR key = $2', [hashLicenseKey(key), key]);
   if (found.rowCount === 0) return send(res, 404, { error: 'invalid_key' });
   await db.query('DELETE FROM license_activations WHERE license_id = $1 AND device_id = $2', [
     found.rows[0].id,
@@ -475,8 +553,9 @@ async function handleAdminApi(req, res, url, session) {
     const email = typeof body.email === 'string' && body.email.includes('@') ? body.email.toLowerCase() : null;
     const key = generateKey();
     await db.query(
-      "INSERT INTO licenses (key, key_encrypted, plan, seats, email, issued_by) VALUES ($1,$2,$3,$4,$5,'admin')",
-      [key, encryptLicenseKey(key), plan, seats, email],
+      `INSERT INTO licenses (key, key_hash, key_encrypted, plan, seats, email, issued_by)
+       VALUES ($1,$2,$3,$4,$5,$6,'admin')`,
+      [maskKey(key), hashLicenseKey(key), encryptLicenseKey(key), plan, seats, email],
     );
     await db.query('INSERT INTO admin_audit (email, action, detail) VALUES ($1,$2,$3)', [
       session.email,
@@ -644,6 +723,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/trial') return await handleTrial(req, res);
+    if (req.method === 'POST' && pathname === '/api/trial/sync') return await handleTrialSync(req, res);
     if (req.method === 'GET' && pathname === '/download/TapCopy.dmg') return await handleDownload(req, res);
     if (req.method === 'GET' && (pathname === '/api/updates/latest' || pathname === '/latest.json')) {
       return await handleManifest(req, res);
@@ -677,14 +757,30 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === '/api/auth/callback/google') {
       const code = url.searchParams.get('code');
-      if (!code) return send(res, 400, { error: 'missing_code' });
+      const state = url.searchParams.get('state');
+      const cookieState = readOAuthState(req.headers.cookie);
+      const stateMatches = Boolean(state && cookieState)
+        && state.length === cookieState.length
+        && crypto.timingSafeEqual(Buffer.from(state), Buffer.from(cookieState));
+      if (!stateMatches) {
+        return send(res, 403, { error: 'invalid_state' }, { 'Set-Cookie': clearStateCookie() });
+      }
+      if (!code) {
+        return send(res, 400, { error: 'missing_code' }, { 'Set-Cookie': clearStateCookie() });
+      }
       try {
         const profile = await exchangeCode(code);
-        if (!ADMIN_EMAIL.includes(profile.email)) return send(res, 403, { error: 'forbidden' });
-        res.writeHead(302, { Location: '/admin', 'Set-Cookie': sessionCookie(profile.email), 'Cache-Control': 'no-store' });
+        if (!ADMIN_EMAIL.includes(profile.email)) {
+          return send(res, 403, { error: 'forbidden' }, { 'Set-Cookie': clearStateCookie() });
+        }
+        res.writeHead(302, {
+          Location: '/admin',
+          'Set-Cookie': [sessionCookie(profile.email), clearStateCookie()],
+          'Cache-Control': 'no-store',
+        });
         return res.end();
       } catch {
-        return send(res, 403, { error: 'forbidden' });
+        return send(res, 403, { error: 'forbidden' }, { 'Set-Cookie': clearStateCookie() });
       }
     }
     if (pathname === '/api/auth/logout') {

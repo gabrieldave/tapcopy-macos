@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import Security
 
 /// Signed auto-update checker for TapCopy.
 ///
@@ -131,6 +132,22 @@ final class AppUpdateChecker {
         "\(manifest.version)|\(manifest.build)|\(manifest.sha256)|\(manifest.url.absoluteString)"
     }
 
+    /// Apple code-signature gate for the downloaded DMG (Team YH6W55MP95).
+    static func verifyAppleSignature(of file: URL) -> Bool {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(file as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode else {
+            return false
+        }
+        var requirement: SecRequirement?
+        let requirementString = "anchor apple generic and certificate leaf[subject.OU] = \"YH6W55MP95\"" as CFString
+        guard SecRequirementCreateWithString(requirementString, [], &requirement) == errSecSuccess,
+              let requirement else {
+            return false
+        }
+        return SecStaticCodeCheckValidity(staticCode, SecCSFlags(rawValue: kSecCSCheckAllArchitectures), requirement) == errSecSuccess
+    }
+
     static func verifySignature(_ manifest: Manifest) -> Bool {
         guard let publicData = Data(base64Encoded: LicenseManager.publicKeyBase64),
               let publicKey = try? Curve25519.Signing.PublicKey(rawRepresentation: publicData),
@@ -209,6 +226,16 @@ final class AppUpdateChecker {
                     self.alert(
                         title: "Archivo dañado",
                         message: "El SHA-256 no coincide con el manifiesto firmado. La actualización se descartó.",
+                        style: .critical
+                    )
+                    return
+                }
+
+                guard Self.verifyAppleSignature(of: target) else {
+                    try? FileManager.default.removeItem(at: target)
+                    self.alert(
+                        title: "Firma de instalador no válida",
+                        message: "El .dmg no está firmado por el equipo oficial YH6W55MP95. La actualización se descartó.",
                         style: .critical
                     )
                     return

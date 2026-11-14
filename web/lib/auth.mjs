@@ -89,5 +89,24 @@ export async function exchangeCode(code) {
   return { email: String(profile.email).toLowerCase(), name: profile.name || '' };
 }
 
+const STATE_COOKIE = 'tapcopy_oauth_state';
+
+/** Reads the short-lived CSRF state cookie set by /api/auth/google. */
+export function readOAuthState(cookieHeader) {
+  if (!cookieHeader) return null;
+  const raw = String(cookieHeader)
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${STATE_COOKIE}=`));
+  if (!raw) return null;
+  const value = raw.slice(STATE_COOKIE.length + 1);
+  return value || null;
+}
+
+/** Expires the state cookie (also sent after a successful exchange). */
+export function clearStateCookie() {
+  return `${STATE_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+}
+
 export const stateCookie = (state) =>
-  `tapcopy_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`;
+  `${STATE_COOKIE}=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`;

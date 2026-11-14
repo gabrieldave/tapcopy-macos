@@ -3,11 +3,16 @@ import CryptoKit
 import Foundation
 import Security
 
-/// TapCopy v1.1.0 — licensing, 14-day trial clock and seat activation.
+/// TapCopy v1.1.1 — licensing, 14-day trial clock and seat activation.
 ///
 /// Everything is stored in the Keychain so deleting UserDefaults never resets
 /// the trial. Selected text is never part of any request: the only fields that
 /// ever leave the Mac are the license key, the device hash and the app version.
+///
+/// Layer 3: the trial has two locks — a monotonic local anchor (`lastSeen`,
+/// NTP tolerance 300 s) and a server-side `hardware_trials` record keyed by the
+/// per-Mac device hash. Moving the system clock backwards flips the UI into
+/// `.clockTampered` instead of extending the trial.
 final class LicenseManager {
 
     static let shared = LicenseManager()
@@ -17,17 +22,22 @@ final class LicenseManager {
 
     static let trialDays = 14
     static let baseURL = URL(string: "https://tapcopy.iareal.net")!
+    static let clockDriftTolerance: TimeInterval = 300
 
     private enum Keys {
         static let trial = "net.iareal.tapcopy.trial"
         static let license = "net.iareal.tapcopy.license"
         static let trialStartField = "firstLaunch"
+        static let lastSeenField = "lastSeen"
+        static let remoteSyncField = "lastRemoteSync"
         static let reminder = "net.iareal.tapcopy.reminder"
     }
 
     static let licenseChanged = Notification.Name("TapCopyLicenseChanged")
 
     private(set) var storedToken: String?
+    private(set) var isClockTampered = false
+    private var clockTimer: Timer?
 
     private init() {
         storedToken = Keychain.string(service: Keys.license, account: "token")
@@ -60,26 +70,73 @@ final class LicenseManager {
         Host.current().localizedName ?? ProcessInfo.processInfo.hostName
     }
 
-    // MARK: - Trial clock
+    // MARK: - Trial clock (local monotonic anchor)
+
+    /// Installs the 5-minute heartbeat and validates the anchors at launch.
+    func startClock() {
+        updateTrialAnchors(now: Date())
+        guard clockTimer == nil else { return }
+        let timer = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
+            self?.updateTrialAnchors(now: Date())
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        clockTimer = timer
+    }
+
+    /// Waking from sleep may jump the clock: re-validate and re-anchor.
+    func handleWake() {
+        updateTrialAnchors(now: Date())
+        syncTrialIfNeeded()
+    }
 
     /// First launch is written to the Keychain on the very first read.
-    private func trialStart() -> Date {
+    private func trialStartDate(now: Date = Date()) -> Date {
         if let raw = Keychain.string(service: Keys.trial, account: Keys.trialStartField),
            let timestamp = TimeInterval(raw) {
             return Date(timeIntervalSince1970: timestamp)
         }
-        let now = Date()
-        Keychain.set(String(now.timeIntervalSince1970), service: Keys.trial, account: Keys.trialStartField)
-        return now
+        let first = now
+        Keychain.set(String(first.timeIntervalSince1970), service: Keys.trial, account: Keys.trialStartField)
+        return first
+    }
+
+    private var trialStart: Date { trialStartDate() }
+
+    private var storedLastSeen: TimeInterval {
+        guard let raw = Keychain.string(service: Keys.trial, account: Keys.lastSeenField),
+              let value = TimeInterval(raw) else { return 0 }
+        return value
+    }
+
+    /// Monotonic guard: a clock that travels backwards more than the NTP
+    /// tolerance (300 s) marks the trial as tampered and never rewinds lastSeen.
+    private func updateTrialAnchors(now: Date) {
+        let first = trialStartDate(now: now).timeIntervalSince1970
+        let previous = storedLastSeen
+        let current = now.timeIntervalSince1970
+
+        let behindFirst = current < first - Self.clockDriftTolerance
+        let behindLast = previous > 0 && current < previous - Self.clockDriftTolerance
+        let tampered = behindFirst || behindLast
+
+        if tampered != isClockTampered {
+            TapLog.log("Trial clock tamper state: \(tampered)")
+        }
+        isClockTampered = tampered
+
+        if !tampered {
+            let next = max(previous, current)
+            Keychain.set(String(next), service: Keys.trial, account: Keys.lastSeenField)
+        }
     }
 
     var trialDay: Int {
-        let elapsed = Calendar.current.dateComponents([.day], from: trialStart(), to: Date()).day ?? 0
+        let elapsed = Calendar.current.dateComponents([.day], from: trialStart, to: Date()).day ?? 0
         return min(max(elapsed + 1, 1), Self.trialDays)
     }
 
     var trialDaysLeft: Int {
-        let elapsed = Calendar.current.dateComponents([.day], from: trialStart(), to: Date()).day ?? 0
+        let elapsed = Calendar.current.dateComponents([.day], from: trialStart, to: Date()).day ?? 0
         return max(Self.trialDays - elapsed, 0)
     }
 
@@ -101,8 +158,9 @@ final class LicenseManager {
 
     var isLicensed: Bool { currentLicense != nil }
 
-    /// The pill is only allowed while a valid license exists or the trial is alive.
-    var canUseApp: Bool { isLicensed || !trialExpired }
+    /// The pill is only allowed while a valid license exists or the trial is
+    /// alive and the clock has not been moved backwards.
+    var canUseApp: Bool { isLicensed || (!isClockTampered && !trialExpired) }
 
     var maskedKey: String {
         guard let key = currentLicense?.key else { return "" }
@@ -114,11 +172,76 @@ final class LicenseManager {
         if let license = currentLicense {
             return .licensed(plan: license.plan, maskedKey: maskedKey)
         }
+        if isClockTampered { return .clockTampered }
         if trialExpired { return .trialExpired }
         let left = trialDaysLeft
         return left <= 3
             ? .trialEndingSoon(daysLeft: left, day: trialDay)
             : .trialActive(daysLeft: left, day: trialDay)
+    }
+
+    // MARK: - Remote anchor (hardware_trials)
+
+    /// At launch (unlicensed) and at most every 12 h, ask the server for the
+    /// first time this device was ever seen. Fail-open on a first offline run.
+    func syncTrialIfNeeded() {
+        guard !isLicensed else { return }
+        let now = Date().timeIntervalSince1970
+        let lastSync = TimeInterval(Keychain.string(service: Keys.trial, account: Keys.remoteSyncField) ?? "") ?? 0
+        guard now - lastSync > 43_200 else { return }
+        Keychain.set(String(now), service: Keys.trial, account: Keys.remoteSyncField)
+
+        var request = URLRequest(url: Self.baseURL.appendingPathComponent("api/trial/sync"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "deviceId": deviceId,
+            "appVersion": Self.localVersion.version,
+        ])
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            guard let self,
+                  let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let data,
+                  let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let serverFirstSeen = Self.epoch(payload["firstSeen"]),
+                  let serverNow = Self.epoch(payload["serverNow"]) else {
+                return
+            }
+            DispatchQueue.main.async {
+                let localFirst = self.trialStart.timeIntervalSince1970
+                let effectiveFirst = min(localFirst, serverFirstSeen)
+                Keychain.set(String(effectiveFirst), service: Keys.trial, account: Keys.trialStartField)
+
+                let localLast = self.storedLastSeen
+                let nextLast = max(localLast, serverNow)
+                Keychain.set(String(nextLast), service: Keys.trial, account: Keys.lastSeenField)
+
+                let current = Date().timeIntervalSince1970
+                let tampered = current < effectiveFirst - Self.clockDriftTolerance
+                    || current < nextLast - Self.clockDriftTolerance
+                if tampered != self.isClockTampered {
+                    TapLog.log("Trial clock tamper state after sync: \(tampered)")
+                }
+                self.isClockTampered = tampered
+
+                TapLog.log("Trial synced: firstSeen=\(Int(effectiveFirst)) serverNow=\(Int(serverNow)) day=\(self.trialDay)")
+                NotificationCenter.default.post(name: Self.licenseChanged, object: nil)
+                if !self.canUseApp {
+                    LicenseWindowController.shared.show(self.windowState())
+                }
+            }
+        }.resume()
+    }
+
+    private static func epoch(_ value: Any?) -> TimeInterval? {
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let double = value as? Double { return double }
+        if let int = value as? Int { return TimeInterval(int) }
+        if let string = value as? String, let double = Double(string) { return double }
+        return nil
     }
 
     // MARK: - Activation
@@ -228,7 +351,8 @@ final class LicenseManager {
     /// Shows the license window at most once per day, only when TapCopy has been
     /// completely idle for at least 2 seconds and no pill is on screen.
     func showReminderIfDue(isIdle: Bool) {
-        guard !isLicensed, trialDaysLeft <= 3, isIdle, !TapCopyPanelController.shared.isVisible else { return }
+        guard !isLicensed, !isClockTampered, trialDaysLeft <= 3, isIdle,
+              !TapCopyPanelController.shared.isVisible else { return }
         let today = ISO8601DateFormatter.string(
             from: Date(),
             timeZone: .current,
@@ -254,6 +378,8 @@ final class LicenseManager {
 // MARK: - Keychain helpers
 
 enum Keychain {
+    /// `ThisDeviceOnly`: the trial and the license never travel through iCloud
+    /// Keychain or an encrypted backup to a different Mac.
     static func set(_ value: String, service: String, account: String) {
         remove(service: service, account: account)
         let query: [String: Any] = [
@@ -261,11 +387,13 @@ enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecValueData as String: Data(value.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         SecItemAdd(query as CFDictionary, nil)
     }
 
+    /// Reads legacy entries created by v1.1.0 (any accessibility class): the
+    /// next write migrates them to ThisDeviceOnly without losing dates/tokens.
     static func string(service: String, account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

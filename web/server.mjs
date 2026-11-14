@@ -516,6 +516,21 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && (pathname === '/api/updates/latest' || pathname === '/latest.json')) {
       return await handleManifest(req, res);
     }
+
+    // Public proof of the shipped build: version, build and the post-staple SHA-256.
+    if (req.method === 'GET' && pathname === '/release-info.txt') {
+      try {
+        const raw = await fsp.readFile(path.join(STORAGE_DIR, 'release-info.txt'), 'utf8');
+        res.writeHead(200, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+          ...securityHeaders(pathname),
+        });
+        return res.end(raw);
+      } catch {
+        return send(res, 404, { error: 'not_found' });
+      }
+    }
     if (req.method === 'GET' && (pathname === '/checkout/personal' || pathname === '/checkout/pro')) {
       return await handleCheckout(req, res, pathname.endsWith('pro') ? 'pro' : 'personal', url);
     }

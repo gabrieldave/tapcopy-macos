@@ -144,30 +144,45 @@ fi
 # -------------------------------------------------------------------- dmg ---
 DMG="$DIST/${APP_NAME}-${VERSION}.dmg"
 STAGE="$DIST/dmg-stage"
-rm -rf "$STAGE" "$DMG"
-mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/$APP_NAME.app"
-ln -s /Applications "$STAGE/Applications"
 
-log "Empaquetando ${APP_NAME}-${VERSION}.dmg"
-hdiutil create \
-    -volname "$APP_NAME" \
-    -srcfolder "$STAGE" \
-    -ov -format UDZO \
-    "$DMG" >/dev/null
-rm -rf "$STAGE"
+package_dmg() {
+    rm -rf "$STAGE" "$DMG"
+    mkdir -p "$STAGE"
+    ditto "$APP" "$STAGE/$APP_NAME.app"
+    ln -s /Applications "$STAGE/Applications"
 
-codesign --force --timestamp --sign "$SIGN_ID" "$DMG"
-codesign --verify --verbose=2 "$DMG"
+    log "Empaquetando ${APP_NAME}-${VERSION}.dmg"
+    hdiutil create \
+        -volname "$APP_NAME" \
+        -srcfolder "$STAGE" \
+        -ov -format UDZO \
+        "$DMG" >/dev/null
+    rm -rf "$STAGE"
 
-# --------------------------------------------------------------- notarize ---
-log "Notarizando con perfil '${KEYCHAIN_PROFILE}' (puede tardar unos minutos)"
-xcrun notarytool submit "$DMG" --keychain-profile "$KEYCHAIN_PROFILE" --wait
+    codesign --force --timestamp --sign "$SIGN_ID" "$DMG"
+    codesign --verify --verbose=2 "$DMG"
+}
 
-# ---------------------------------------------------- staple app and dmg ----
+notarize_dmg() {
+    log "Notarizando con perfil '${KEYCHAIN_PROFILE}' (puede tardar unos minutos)"
+    xcrun notarytool submit "$DMG" --keychain-profile "$KEYCHAIN_PROFILE" --wait || \
+        fail "La notarización falló"
+}
+
+package_dmg
+
+# First pass: Apple notarizes the bundle inside the DMG, which is what lets us
+# staple a ticket onto the .app itself.
+notarize_dmg
+
 log "Engrapando y validando la app"
 xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
+
+# Second pass: rebuild the DMG from the *stapled* app so the ticket travels
+# inside the image, then notarize and staple the new image bytes.
+package_dmg
+notarize_dmg
 
 log "Engrapando y validando el .dmg"
 xcrun stapler staple "$DMG"

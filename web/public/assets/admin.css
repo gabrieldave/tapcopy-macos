@@ -93,3 +93,10 @@ td.mono { letter-spacing: .02em; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Row actions — every licence operation is one click, addressed by row id. */
+td.actions { display: flex; gap: 6px; align-items: center; }
+td.actions button { padding: 6px 10px; font-size: 12px; }
+td.actions button.danger { color: var(--bad); }
+td.actions button.danger:hover { background: rgba(239, 68, 68, .14); }
+td.actions button:disabled { opacity: .45; cursor: not-allowed; }

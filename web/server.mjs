@@ -115,6 +115,65 @@ function generateKey() {
 
 const maskKey = (key) => `${key.slice(0, 6)}••••-••••-${key.slice(-4)}`;
 
+// ------------------------------------------------------- key at rest (AES) ---
+// Licenses are still looked up by their literal TCOPY-… value (the app posts it
+// verbatim), but the admin panel must be able to show/mail the full key on
+// demand, so we keep a recoverable AES-256-GCM copy derived from the server
+// secret. The key material never leaves the container.
+const ENC_SECRET = process.env.TAPCOPY_LICENSE_ENC_KEY || process.env.SESSION_SECRET || '';
+const ENC_KEY = ENC_SECRET
+  ? Buffer.from(
+      crypto.hkdfSync('sha256', Buffer.from(ENC_SECRET), Buffer.from('tapcopy-license-v1'), Buffer.from('aes-256-gcm-license-key'), 32),
+    )
+  : null;
+
+function encryptLicenseKey(plain) {
+  if (!ENC_KEY || !plain) return null;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENC_KEY, iv);
+  const ciphertext = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  return ['v1', iv.toString('base64url'), cipher.getAuthTag().toString('base64url'), ciphertext.toString('base64url')].join('.');
+}
+
+function decryptLicenseKey(blob) {
+  if (!ENC_KEY || !blob) return null;
+  try {
+    const [version, ivB64, tagB64, dataB64] = String(blob).split('.');
+    if (version !== 'v1' || !ivB64 || !tagB64 || !dataB64) return null;
+    const decipher = crypto.createDecipheriv('aes-256-gcm', ENC_KEY, Buffer.from(ivB64, 'base64url'));
+    decipher.setAuthTag(Buffer.from(tagB64, 'base64url'));
+    return Buffer.concat([decipher.update(Buffer.from(dataB64, 'base64url')), decipher.final()]).toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+/// Adds `key_encrypted` on existing databases and backfills it from the literal
+/// key column (only for rows created before this column existed).
+async function ensureKeyEncryption() {
+  try {
+    await db.query('ALTER TABLE licenses ADD COLUMN IF NOT EXISTS key_encrypted TEXT');
+    if (!ENC_KEY) {
+      console.warn('license encryption disabled: missing SESSION_SECRET');
+      return;
+    }
+    const pending = await db.query('SELECT id, key FROM licenses WHERE key_encrypted IS NULL');
+    for (const row of pending.rows) {
+      const blob = encryptLicenseKey(row.key);
+      if (blob) await db.query('UPDATE licenses SET key_encrypted = $1 WHERE id = $2', [blob, row.id]);
+    }
+    if (pending.rowCount) console.log(`license keys encrypted: ${pending.rowCount}`);
+  } catch (err) {
+    console.error('key encryption init failed', err.message);
+  }
+}
+
+/// Full key for an admin action: prefer the encrypted copy, fall back to the
+/// legacy plaintext column for rows that predate the backfill.
+function fullLicenseKey(row) {
+  return decryptLicenseKey(row.key_encrypted) || row.key || null;
+}
+
 // ------------------------------------------------------------------ trial ---
 async function handleTrial(req, res) {
   const raw = await readBody(req);
@@ -253,8 +312,8 @@ async function handleStripeWebhook(req, res) {
         );
         const key = generateKey();
         await db.query(
-          'INSERT INTO licenses (key, plan, seats, email, order_id, issued_by) VALUES ($1,$2,$3,$4,$5,$6)',
-          [key, plan, seats, email, order.rows[0].id, 'stripe'],
+          'INSERT INTO licenses (key, key_encrypted, plan, seats, email, order_id, issued_by) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [key, encryptLicenseKey(key), plan, seats, email, order.rows[0].id, 'stripe'],
         );
         if (email) {
           const mail = receiptMail(lang, { key, plan, seats, amount: (amount / 100).toFixed(2) });
@@ -359,10 +418,11 @@ async function adminStats() {
     db.query('SELECT COUNT(*)::int AS used FROM license_activations'),
     db.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE created_at > now() - interval '7 days')::int AS week FROM trial_leads"),
     db.query(
-      `SELECT l.key, l.plan, l.seats, l.status, l.email, l.created_at,
+      `SELECT l.id, l.key, l.plan, l.seats, l.status, l.email, l.created_at,
+              (l.key_encrypted IS NOT NULL) AS has_cipher,
               COUNT(a.id)::int AS used
        FROM licenses l LEFT JOIN license_activations a ON a.license_id = l.id
-       GROUP BY l.id ORDER BY l.created_at DESC LIMIT 50`,
+       GROUP BY l.id ORDER BY l.created_at DESC LIMIT 100`,
     ),
   ]);
 
@@ -385,7 +445,17 @@ async function adminStats() {
     seatsUsed: activations.rows[0].used,
     leads: leads.rows[0],
     leadsList: leadsList.rows,
-    recent: recent.rows.map((r) => ({ ...r, maskedKey: maskKey(r.key), key: undefined })),
+    recent: recent.rows.map((r) => ({
+      id: r.id,
+      maskedKey: maskKey(r.key),
+      plan: r.plan,
+      seats: r.seats,
+      used: r.used,
+      status: r.status,
+      email: r.email,
+      created_at: r.created_at,
+      hasCipher: !!r.has_cipher,
+    })),
     manifest,
     version: VERSION,
     build: BUILD,
@@ -405,8 +475,8 @@ async function handleAdminApi(req, res, url, session) {
     const email = typeof body.email === 'string' && body.email.includes('@') ? body.email.toLowerCase() : null;
     const key = generateKey();
     await db.query(
-      "INSERT INTO licenses (key, plan, seats, email, issued_by) VALUES ($1,$2,$3,$4,'admin')",
-      [key, plan, seats, email],
+      "INSERT INTO licenses (key, key_encrypted, plan, seats, email, issued_by) VALUES ($1,$2,$3,$4,$5,'admin')",
+      [key, encryptLicenseKey(key), plan, seats, email],
     );
     await db.query('INSERT INTO admin_audit (email, action, detail) VALUES ($1,$2,$3)', [
       session.email,
@@ -420,38 +490,100 @@ async function handleAdminApi(req, res, url, session) {
     return send(res, 200, { key });
   }
 
-  if (action === 'resend' && req.method === 'POST') {
+  // Everything below is addressed by the numeric row id — the admin never has
+  // to know or type a TCOPY-… key.
+  const match = action.match(/^licenses\/(\d+)(?:\/(key|resend|revoke|reactivate))?$/);
+  if (!match) return send(res, 404, { error: 'not_found' });
+
+  const id = Number(match[1]);
+  const sub = match[2] || '';
+  const found = await db.query('SELECT * FROM licenses WHERE id = $1', [id]);
+  if (found.rowCount === 0) return send(res, 404, { error: 'not_found' });
+  const license = found.rows[0];
+
+  if (!sub) {
+    if (req.method === 'DELETE') {
+      await db.query('DELETE FROM license_activations WHERE license_id = $1', [id]);
+      await db.query('DELETE FROM licenses WHERE id = $1', [id]);
+      await db.query('INSERT INTO admin_audit (email, action, detail) VALUES ($1,$2,$3)', [
+        session.email,
+        'delete',
+        `${maskKey(license.key)} (#${id})`,
+      ]);
+      return send(res, 200, { ok: true, deleted: id });
+    }
+    if (req.method === 'GET') {
+      return send(res, 200, {
+        id: license.id,
+        maskedKey: maskKey(license.key),
+        plan: license.plan,
+        seats: license.seats,
+        status: license.status,
+        email: license.email,
+        hasCipher: Boolean(license.key_encrypted),
+      });
+    }
+    return send(res, 405, { error: 'method_not_allowed' });
+  }
+
+  if (sub === 'key') {
+    const full = fullLicenseKey(license);
+    if (!full) return send(res, 409, { error: 'no_key_stored', id });
+    return send(res, 200, { id, key: full, maskedKey: maskKey(license.key) });
+  }
+
+  if (sub === 'resend') {
+    if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
     const body = JSON.parse((await readBody(req)) || '{}');
-    const key = String(body.key || '').toUpperCase();
-    const found = await db.query('SELECT * FROM licenses WHERE key = $1', [key]);
-    if (found.rowCount === 0) return send(res, 404, { error: 'not_found' });
-    const license = found.rows[0];
-    if (!license.email) return send(res, 400, { error: 'no_email' });
-    const mail = receiptMail('en', {
-      key: license.key,
+    let target = license.email ? String(license.email).trim().toLowerCase() : '';
+    if (!target) {
+      const candidate = String(body.email || '').trim().toLowerCase();
+      if (!candidate.includes('@')) return send(res, 400, { error: 'email_required', id });
+      target = candidate;
+      await db.query('UPDATE licenses SET email = $1 WHERE id = $2', [target, id]);
+    }
+    const full = fullLicenseKey(license);
+    if (!full) return send(res, 409, { error: 'no_key_stored', id });
+
+    let lang = 'en';
+    if (license.order_id) {
+      const order = await db.query('SELECT lang FROM orders WHERE id = $1', [license.order_id]);
+      if (order.rowCount && order.rows[0].lang === 'es') lang = 'es';
+    }
+    const mail = receiptMail(lang, {
+      key: full,
       plan: license.plan,
       seats: license.seats,
       amount: (PLANS[license.plan].amountCents / 100).toFixed(2),
     });
-    const result = await sendMail({ to: license.email, ...mail });
+    const result = await sendMail({ to: target, ...mail });
     await db.query('INSERT INTO admin_audit (email, action, detail) VALUES ($1,$2,$3)', [
       session.email,
       'resend',
-      maskKey(key),
+      `${maskKey(license.key)} → ${target}`,
     ]);
-    return send(res, 200, { sent: !!result.ok });
+    if (!result.ok) return send(res, 502, { error: 'mail_failed', id, to: target });
+    return send(res, 200, { sent: true, to: target, id });
   }
 
-  if (action === 'revoke' && req.method === 'POST') {
-    const body = JSON.parse((await readBody(req)) || '{}');
-    const key = String(body.key || '').toUpperCase();
-    await db.query("UPDATE licenses SET status = 'revoked', revoked_at = now() WHERE key = $1", [key]);
+  if (sub === 'revoke' || sub === 'reactivate') {
+    if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+    if (sub === 'revoke') {
+      await db.query("UPDATE licenses SET status = 'revoked', revoked_at = now() WHERE id = $1", [id]);
+      await db.query('INSERT INTO admin_audit (email, action, detail) VALUES ($1,$2,$3)', [
+        session.email,
+        'revoke',
+        `${maskKey(license.key)} (#${id})`,
+      ]);
+      return send(res, 200, { ok: true, id, status: 'revoked' });
+    }
+    await db.query("UPDATE licenses SET status = 'active', revoked_at = NULL WHERE id = $1", [id]);
     await db.query('INSERT INTO admin_audit (email, action, detail) VALUES ($1,$2,$3)', [
       session.email,
-      'revoke',
-      maskKey(key),
+      'reactivate',
+      `${maskKey(license.key)} (#${id})`,
     ]);
-    return send(res, 200, { ok: true });
+    return send(res, 200, { ok: true, id, status: 'active' });
   }
 
   return send(res, 404, { error: 'not_found' });
@@ -615,6 +747,7 @@ async function main() {
   if (process.env.DATABASE_URL) {
     try {
       await migrate();
+      await ensureKeyEncryption();
       console.log('database ready');
     } catch (err) {
       console.error('migration failed', err.message);

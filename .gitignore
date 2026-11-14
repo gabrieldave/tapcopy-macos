@@ -1,0 +1,9 @@
+.build/
+dist/
+*.dmg
+*.pkg
+*.zip
+*.app
+.DS_Store
+*.env
+secrets.env

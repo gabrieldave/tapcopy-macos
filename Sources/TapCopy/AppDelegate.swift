@@ -56,6 +56,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?",
               signature.isValid ? "yes" : "no",
               signature.teamIdentifier ?? "unsigned")
+
+        // Internal visual smoke test: TapCopy --demo-pill
+        if CommandLine.arguments.contains("--demo-pill") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                TapCopyPanelController.shared.show(
+                    near: NSEvent.mouseLocation,
+                    fallbackText: "Texto de demostración"
+                )
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

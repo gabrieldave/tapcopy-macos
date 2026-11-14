@@ -1,12 +1,17 @@
 import AppKit
 import ApplicationServices
 
-/// Watches mouse/trackpad gestures and pulls the current text selection through
-/// the Accessibility API. It never touches the pasteboard while reading and
-/// never synthesizes Cmd+C on mouse-up, so the blue selection stays intact.
+/// Watches mouse/trackpad gestures and pulls the current text selection (plus its
+/// screen bounding box) through the Accessibility API without touching NSPasteboard.
 final class SelectionMonitor {
 
     static let shared = SelectionMonitor()
+
+    private struct ExtractedSelection {
+        let text: String
+        let bounds: NSRect?
+        let sourcePID: pid_t
+    }
 
     // MARK: - State
 
@@ -34,7 +39,6 @@ final class SelectionMonitor {
 
     // MARK: - Lifecycle & Power State
 
-    /// Called once at launch without overwriting UserDefaults unless explicitly toggled by the user.
     func configureAtLaunch(enabled: Bool) {
         let defaults = UserDefaults.standard
         if let savedChameleon = defaults.object(forKey: "tapCopyChameleonMode") as? Bool {
@@ -53,7 +57,6 @@ final class SelectionMonitor {
         applyEnabledState()
     }
 
-    /// Persists only explicit user power changes (never called by app termination).
     func setEnabled(_ enabled: Bool) {
         guard enabled != isEnabled else { return }
         isEnabled = enabled
@@ -97,7 +100,6 @@ final class SelectionMonitor {
         TapLog.log("Updated excluded apps: \(excludedBundleIDs)")
     }
 
-    /// Refreshes event monitors after TCC grant, Mac wake, or display reconfiguration.
     func reinstallMonitors() {
         removeMonitors()
         if isEnabled {
@@ -105,7 +107,6 @@ final class SelectionMonitor {
         }
     }
 
-    /// Clean teardown on app quit/reboot WITHOUT saving `false` into UserDefaults.
     func shutdown() {
         pendingReadWorkItem?.cancel()
         pendingReadWorkItem = nil
@@ -236,6 +237,7 @@ final class SelectionMonitor {
         readSequence &+= 1
         let currentSequence = readSequence
 
+        // Wait 105ms so web DOM selection chips (e.g. Gemini's "Pregúntale a Gemini" or Notion's bar) mount first.
         let work = DispatchWorkItem { [weak self] in
             self?.readFrontmostSelection(
                 startPoint: startPoint,
@@ -244,7 +246,7 @@ final class SelectionMonitor {
             )
         }
         pendingReadWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.075, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.105, execute: work)
     }
 
     func debugReadFrontmostSelection() {
@@ -272,37 +274,44 @@ final class SelectionMonitor {
 
         let pid = frontApp.processIdentifier
         let appName = frontApp.localizedName ?? "?"
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 900
         TapLog.log("Reading selection from \(appName) [\(pid)]")
 
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             guard let self else { return }
-            var selected = self.extractSelection(
+            var extracted = self.extractSelection(
                 pid: pid,
                 startPoint: startPoint,
                 endPoint: endPoint,
+                primaryHeight: primaryHeight,
                 forceReenableAX: false
             )
 
-            // Retry once if Chromium/Electron/WebKit was still building its AX tree or updating selection.
-            if selected == nil {
+            if extracted == nil {
                 usleep(130_000)
-                selected = self.extractSelection(
+                extracted = self.extractSelection(
                     pid: pid,
                     startPoint: startPoint,
                     endPoint: endPoint,
+                    primaryHeight: primaryHeight,
                     forceReenableAX: true
                 )
             }
 
-            guard let finalSelection = selected else {
+            guard let result = extracted else {
                 TapLog.log("No selected text returned for \(appName) [\(pid)]")
                 return
             }
 
-            TapLog.log("Selection captured: \(finalSelection.count) chars from \(appName)")
+            TapLog.log("Selection captured: \(result.text.count) chars from \(appName)")
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isEnabled, self.readSequence == sequence else { return }
-                TapCopyPanelController.shared.show(near: NSEvent.mouseLocation, fallbackText: finalSelection)
+                TapCopyPanelController.shared.show(
+                    near: NSEvent.mouseLocation,
+                    fallbackText: result.text,
+                    selectionBounds: result.bounds,
+                    sourcePID: result.sourcePID
+                )
             }
         }
     }
@@ -311,8 +320,9 @@ final class SelectionMonitor {
         pid: pid_t,
         startPoint: NSPoint,
         endPoint: NSPoint,
+        primaryHeight: CGFloat,
         forceReenableAX: Bool
-    ) -> String? {
+    ) -> ExtractedSelection? {
         let ownPID = ProcessInfo.processInfo.processIdentifier
         var orderedPIDs: [pid_t] = []
 
@@ -327,9 +337,11 @@ final class SelectionMonitor {
             y: (startPoint.y + endPoint.y) * 0.5
         )
 
-        var hitElements: [AXUIElement] = []
+        var hitElements: [(pid: pid_t, element: AXUIElement)] = []
         for point in [endPoint, midPoint, startPoint] {
-            if let hit = element(at: point), let hitPID = ownerPID(of: hit), hitPID != ownPID {
+            if let hit = element(at: point, primaryHeight: primaryHeight),
+               let hitPID = ownerPID(of: hit),
+               hitPID != ownPID {
                 if let hitApp = NSRunningApplication(processIdentifier: hitPID),
                    isAppExcluded(bundleID: hitApp.bundleIdentifier) {
                     continue
@@ -338,40 +350,39 @@ final class SelectionMonitor {
                     let hitAppRef = AXUIElementCreateApplication(hitPID)
                     enableModernAccessibility(hitAppRef, pid: hitPID, force: forceReenableAX)
                     orderedPIDs.insert(hitPID, at: 0)
-                    if let refreshedHit = element(at: point) {
-                        hitElements.append(refreshedHit)
+                    if let refreshedHit = element(at: point, primaryHeight: primaryHeight) {
+                        hitElements.append((hitPID, refreshedHit))
                         continue
                     }
                 }
-                hitElements.append(hit)
+                hitElements.append((hitPID, hit))
             }
         }
 
-        var candidates: [AXUIElement] = []
+        var candidates: [(pid: pid_t, element: AXUIElement)] = []
         for targetPID in orderedPIDs {
             let appRef = AXUIElementCreateApplication(targetPID)
             if let focused = copyElement(appRef, attribute: kAXFocusedUIElementAttribute as String) {
-                candidates.append(focused)
+                candidates.append((targetPID, focused))
             }
         }
         candidates.append(contentsOf: hitElements)
 
         for candidate in candidates {
-            if let role = role(of: candidate), discardedRoles.contains(role) {
+            if let role = role(of: candidate.element), discardedRoles.contains(role) {
                 continue
             }
-            if let text = extractTextWalkingParents(from: candidate, maxLevels: 20) {
-                return text
+            if let found = extractTextWalkingParents(from: candidate.element, maxLevels: 20, primaryHeight: primaryHeight) {
+                return ExtractedSelection(text: found.text, bounds: found.bounds, sourcePID: candidate.pid)
             }
         }
 
-        // Fallback: search downward inside the focused/main window for AXWebArea or text containers.
         for targetPID in orderedPIDs {
             let appRef = AXUIElementCreateApplication(targetPID)
             let window = copyElement(appRef, attribute: kAXFocusedWindowAttribute as String)
                 ?? copyElement(appRef, attribute: kAXMainWindowAttribute as String)
-            if let window, let text = extractTextFromWindowSubtree(window: window) {
-                return text
+            if let window, let found = extractTextFromWindowSubtree(window: window, primaryHeight: primaryHeight) {
+                return ExtractedSelection(text: found.text, bounds: found.bounds, sourcePID: targetPID)
             }
         }
 
@@ -394,15 +405,19 @@ final class SelectionMonitor {
         }
     }
 
-    private func extractTextWalkingParents(from element: AXUIElement, maxLevels: Int) -> String? {
+    private func extractTextWalkingParents(
+        from element: AXUIElement,
+        maxLevels: Int,
+        primaryHeight: CGFloat
+    ) -> (text: String, bounds: NSRect?)? {
         var current: AXUIElement? = element
         var level = 0
         while let node = current, level <= maxLevels {
             if let currentRole = role(of: node), discardedRoles.contains(currentRole) {
                 return nil
             }
-            if let text = directSelection(in: node) {
-                return text
+            if let found = directSelection(in: node, primaryHeight: primaryHeight) {
+                return found
             }
             current = copyElement(node, attribute: kAXParentAttribute as String)
             level += 1
@@ -410,7 +425,10 @@ final class SelectionMonitor {
         return nil
     }
 
-    private func extractTextFromWindowSubtree(window: AXUIElement) -> String? {
+    private func extractTextFromWindowSubtree(
+        window: AXUIElement,
+        primaryHeight: CGFloat
+    ) -> (text: String, bounds: NSRect?)? {
         var queue: [(element: AXUIElement, depth: Int)] = [(window, 0)]
         var index = 0
         let maxVisited = 72
@@ -423,8 +441,8 @@ final class SelectionMonitor {
             if let nodeRole = role(of: current.element), discardedRoles.contains(nodeRole) {
                 continue
             }
-            if let text = directSelection(in: current.element) {
-                return text
+            if let found = directSelection(in: current.element, primaryHeight: primaryHeight) {
+                return found
             }
             guard current.depth < maxDepth else { continue }
 
@@ -436,17 +454,11 @@ final class SelectionMonitor {
         return nil
     }
 
-    private func directSelection(in element: AXUIElement) -> String? {
-        // (a) Plain selected text.
-        var selectedValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedValue) == .success,
-           let raw = selectedValue as? String {
-            if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return raw
-            }
-        }
-
-        // (b) Text marker range — Chrome, Brave, Arc, Safari, Electron, and WebKit views.
+    private func directSelection(
+        in element: AXUIElement,
+        primaryHeight: CGFloat
+    ) -> (text: String, bounds: NSRect?)? {
+        // (a) Text marker range — Chrome, Brave, Arc, Safari, Electron, and WebKit views (also yields exact bounds).
         var markerValue: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXSelectedTextMarkerRangeAttribute as CFString, &markerValue) == .success,
            let marker = markerValue {
@@ -456,11 +468,20 @@ final class SelectionMonitor {
                 kAXStringForTextMarkerRangeParameterizedAttribute as CFString,
                 marker,
                 &stringValue
-            ) == .success, let raw = stringValue as? String {
-                if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return raw
-                }
+            ) == .success, let raw = stringValue as? String,
+               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let bounds = markerBounds(in: element, marker: marker, primaryHeight: primaryHeight)
+                return (raw, bounds)
             }
+        }
+
+        // (b) Plain selected text (+ optional range bounds).
+        var selectedValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedValue) == .success,
+           let raw = selectedValue as? String,
+           !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let bounds = rangeBounds(in: element, primaryHeight: primaryHeight)
+            return (raw, bounds)
         }
 
         // (c) Selected CFRange — Preview/PDFKit, code editors, and custom AppKit views.
@@ -471,16 +492,16 @@ final class SelectionMonitor {
             let axValue = rawRange as! AXValue
             var cfRange = CFRange(location: 0, length: 0)
             if AXValueGetValue(axValue, .cfRange, &cfRange), cfRange.length > 0, cfRange.location >= 0 {
+                let bounds = rangeBoundsFromValue(in: element, rangeValue: rawRange, primaryHeight: primaryHeight)
                 var paramStringRef: CFTypeRef?
                 if AXUIElementCopyParameterizedAttributeValue(
                     element,
                     kAXStringForRangeParameterizedAttribute as CFString,
                     axValue,
                     &paramStringRef
-                ) == .success, let raw = paramStringRef as? String {
-                    if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        return raw
-                    }
+                ) == .success, let raw = paramStringRef as? String,
+                   !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return (raw, bounds)
                 }
 
                 var fullValueRef: CFTypeRef?
@@ -490,7 +511,7 @@ final class SelectionMonitor {
                     if cfRange.location + cfRange.length <= nsString.length {
                         let sub = nsString.substring(with: NSRange(location: cfRange.location, length: cfRange.length))
                         if !sub.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            return sub
+                            return (sub, bounds)
                         }
                     }
                 }
@@ -498,6 +519,58 @@ final class SelectionMonitor {
         }
 
         return nil
+    }
+
+    private func markerBounds(in element: AXUIElement, marker: CFTypeRef, primaryHeight: CGFloat) -> NSRect? {
+        var boundsRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            "AXBoundsForTextMarkerRange" as CFString,
+            marker,
+            &boundsRef
+        ) == .success,
+              let rawBounds = boundsRef,
+              CFGetTypeID(rawBounds) == AXValueGetTypeID() else {
+            return nil
+        }
+        var cgRect = CGRect.zero
+        guard AXValueGetValue(rawBounds as! AXValue, .cgRect, &cgRect),
+              cgRect.width > 0, cgRect.height > 0 else {
+            return nil
+        }
+        let appKitY = primaryHeight - (cgRect.origin.y + cgRect.size.height)
+        return NSRect(x: cgRect.origin.x, y: appKitY, width: cgRect.size.width, height: cgRect.size.height)
+    }
+
+    private func rangeBounds(in element: AXUIElement, primaryHeight: CGFloat) -> NSRect? {
+        var rangeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+              let rawRange = rangeRef,
+              CFGetTypeID(rawRange) == AXValueGetTypeID() else {
+            return nil
+        }
+        return rangeBoundsFromValue(in: element, rangeValue: rawRange, primaryHeight: primaryHeight)
+    }
+
+    private func rangeBoundsFromValue(in element: AXUIElement, rangeValue: CFTypeRef, primaryHeight: CGFloat) -> NSRect? {
+        var boundsRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXBoundsForRangeParameterizedAttribute as CFString,
+            rangeValue,
+            &boundsRef
+        ) == .success,
+              let rawBounds = boundsRef,
+              CFGetTypeID(rawBounds) == AXValueGetTypeID() else {
+            return nil
+        }
+        var cgRect = CGRect.zero
+        guard AXValueGetValue(rawBounds as! AXValue, .cgRect, &cgRect),
+              cgRect.width > 0, cgRect.height > 0 else {
+            return nil
+        }
+        let appKitY = primaryHeight - (cgRect.origin.y + cgRect.size.height)
+        return NSRect(x: cgRect.origin.x, y: appKitY, width: cgRect.size.width, height: cgRect.size.height)
     }
 
     // MARK: - AX helpers
@@ -549,8 +622,7 @@ final class SelectionMonitor {
         return value as? String
     }
 
-    private func element(at screenPoint: NSPoint) -> AXUIElement? {
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+    private func element(at screenPoint: NSPoint, primaryHeight: CGFloat) -> AXUIElement? {
         let axX = Float(screenPoint.x)
         let axY = Float(primaryHeight - screenPoint.y)
         let systemWide = AXUIElementCreateSystemWide()

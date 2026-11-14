@@ -49,8 +49,16 @@ final class PinShelfController {
 
         let cardSize = NSSize(width: 244, height: 74)
         let stackOffset = CGFloat(activePanels.count) * 18.0
-        let rawOrigin = NSPoint(x: anchor.x + 14 + stackOffset, y: anchor.y - cardSize.height - 22 - stackOffset)
-        let origin = WindowCollisionAvoidance.bestOrigin(anchor: rawOrigin, pillSize: cardSize, ownPanelNumber: nil)
+        let rawAnchor = NSPoint(x: anchor.x + 14 + stackOffset, y: anchor.y - 22 - stackOffset)
+        let metrics = WindowCollisionAvoidance.captureScreenMetrics(near: rawAnchor)
+        let origin = WindowCollisionAvoidance.bestOrigin(
+            anchor: rawAnchor,
+            selectionRect: nil,
+            pillSize: cardSize,
+            targetPID: nil,
+            ownPanelNumber: nil,
+            metrics: metrics
+        )
 
         let panel = ShelfPanel(
             contentRect: NSRect(origin: origin, size: cardSize),

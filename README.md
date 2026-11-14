@@ -126,6 +126,7 @@ Then re-enable TapCopy in System Settings. Runtime events are written to `~/Libr
 - Six candidate positions around the cursor, clamped to the visible screen area
 - Detects third-party floating bars (PopClip, Raycast, DeepL, Grammarly, LookUp) and in-page toolbars through `CGWindowList`, without Screen Recording permission
 - Prefers the area below the cursor, leaving the upper band free for web popovers, and re-checks collisions 160 ms after appearing
+- Reads DOM-level toolbars (Gemini, Notion, ChatGPT, Claude, Medium, Google Docs) through the Accessibility tree, so in-page popovers are avoided too
 
 ### System integration
 

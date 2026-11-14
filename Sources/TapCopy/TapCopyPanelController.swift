@@ -16,7 +16,6 @@ private enum PillPalette {
 // MARK: - Panel subclass
 
 final class TapCopyPanel: NSPanel {
-    // Never steal focus: the source app keeps its blue selection.
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
@@ -245,6 +244,8 @@ final class TapCopyPanelController: NSObject {
     private var pillView: ChameleonPillView?
     private var fallbackText: String = ""
     private var lastAnchor: NSPoint = .zero
+    private var lastSelectionBounds: NSRect?
+    private var lastSourcePID: pid_t?
     private var autoHideWorkItem: DispatchWorkItem?
     private var presentationID: UInt64 = 0
     private var isMenuOpen = false
@@ -268,10 +269,18 @@ final class TapCopyPanelController: NSObject {
 
     // MARK: - Show / Hide
 
-    func show(near point: NSPoint, fallbackText: String, force: Bool = false) {
+    func show(
+        near point: NSPoint,
+        fallbackText: String,
+        selectionBounds: NSRect? = nil,
+        sourcePID: pid_t? = nil,
+        force: Bool = false
+    ) {
         guard force || SelectionMonitor.shared.isEnabled else { return }
         self.fallbackText = fallbackText
         self.lastAnchor = point
+        self.lastSelectionBounds = selectionBounds
+        self.lastSourcePID = sourcePID
 
         presentationID &+= 1
         let currentID = presentationID
@@ -281,31 +290,44 @@ final class TapCopyPanelController: NSObject {
 
         let segments = buildSegments(for: fallbackText, expectedID: currentID)
         let size = pill.configure(with: segments)
-        let origin = WindowCollisionAvoidance.bestOrigin(
-            anchor: point,
-            pillSize: size,
-            ownPanelNumber: targetPanel.windowNumber
-        )
+        let metrics = WindowCollisionAvoidance.captureScreenMetrics(near: point)
+        let winNum = targetPanel.windowNumber
 
-        pill.frame = NSRect(origin: .zero, size: size)
-        targetPanel.setFrame(NSRect(origin: origin, size: size), display: true)
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            let resolvedOrigin = WindowCollisionAvoidance.bestOrigin(
+                anchor: point,
+                selectionRect: selectionBounds,
+                pillSize: size,
+                targetPID: sourcePID,
+                ownPanelNumber: winNum,
+                metrics: metrics
+            )
 
-        scheduleAutoHide(after: 5.0, expectedID: currentID)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.presentationID == currentID else { return }
+                pill.frame = NSRect(origin: .zero, size: size)
+                targetPanel.setFrame(NSRect(origin: resolvedOrigin, size: size), display: true)
 
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.0
-            targetPanel.animator().alphaValue = 0.0
-        }
-        targetPanel.orderFrontRegardless()
+                self.scheduleAutoHide(after: 5.0, expectedID: currentID)
 
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.08
-            targetPanel.animator().alphaValue = 1.0
-        }
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.0
+                    targetPanel.animator().alphaValue = 0.0
+                }
+                targetPanel.orderFrontRegardless()
 
-        // Deferred collision check at 160ms in case PopClip/DeepL/Grammarly popped up right after us.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
-            self?.repositionIfOverlapping(expectedID: currentID)
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.08
+                    targetPanel.animator().alphaValue = 1.0
+                }
+
+                // Re-check at 180ms and 380ms in case Gemini/Notion/PopClip rendered its popup asynchronously.
+                for delay in [0.18, 0.38] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        self?.repositionIfOverlapping(expectedID: currentID)
+                    }
+                }
+            }
         }
     }
 
@@ -331,24 +353,44 @@ final class TapCopyPanelController: NSObject {
 
     private func repositionIfOverlapping(expectedID: UInt64) {
         guard presentationID == expectedID, let panel, panel.isVisible else { return }
-        guard WindowCollisionAvoidance.collidesWithExternalPopup(
-            frame: panel.frame,
-            ownPanelNumber: panel.windowNumber
-        ) else {
-            return
-        }
-        let newOrigin = WindowCollisionAvoidance.bestOrigin(
-            anchor: lastAnchor,
-            pillSize: panel.frame.size,
-            ownPanelNumber: panel.windowNumber
-        )
-        guard hypot(newOrigin.x - panel.frame.origin.x, newOrigin.y - panel.frame.origin.y) >= 4.0 else {
-            return
-        }
-        TapLog.log("Dodged external popup menu -> moved pill to (\(Int(newOrigin.x)), \(Int(newOrigin.y)))")
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.10
-            panel.animator().setFrameOrigin(newOrigin)
+        let currentFrame = panel.frame
+        let anchor = lastAnchor
+        let selBounds = lastSelectionBounds
+        let pid = lastSourcePID
+        let winNum = panel.windowNumber
+        let metrics = WindowCollisionAvoidance.captureScreenMetrics(near: anchor)
+
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            guard WindowCollisionAvoidance.collidesWithAnyObstacle(
+                frame: currentFrame,
+                targetPID: pid,
+                ownPanelNumber: winNum,
+                metrics: metrics
+            ) else {
+                return
+            }
+
+            let newOrigin = WindowCollisionAvoidance.bestOrigin(
+                anchor: anchor,
+                selectionRect: selBounds,
+                pillSize: currentFrame.size,
+                targetPID: pid,
+                ownPanelNumber: winNum,
+                metrics: metrics
+            )
+
+            guard hypot(newOrigin.x - currentFrame.origin.x, newOrigin.y - currentFrame.origin.y) >= 4.0 else {
+                return
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.presentationID == expectedID, let panel = self.panel, panel.isVisible else { return }
+                TapLog.log("Dodged async UI/DOM popup -> moved pill to (\(Int(newOrigin.x)), \(Int(newOrigin.y)))")
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.10
+                    panel.animator().setFrameOrigin(newOrigin)
+                }
+            }
         }
     }
 
@@ -371,7 +413,6 @@ final class TapCopyPanelController: NSObject {
     private func buildSegments(for text: String, expectedID: UInt64) -> [PillSegmentView] {
         var items: [PillSegmentView] = []
 
-        // Primary action: Copy (Cmd+C + AX fallback)
         items.append(
             PillSegmentView(
                 title: "Copiar",
@@ -387,7 +428,6 @@ final class TapCopyPanelController: NSObject {
             return items
         }
 
-        // Function 1: Contextual Smart Action (URL / Path / Color Swatch / Math)
         let contextual = ChameleonAnalyzer.detectContextualMatch(in: text)
         var hidesWebSearch = false
 
@@ -452,12 +492,11 @@ final class TapCopyPanelController: NSObject {
             }
         }
 
-        // Function 2a: Clipboard Sanitation (Plain clean text)
         items.append(
             PillSegmentView(
                 title: "Plano",
                 symbolName: nil,
-                toolTipText: "Copiar como texto plano limpio (sin estilos ni saltos basura)",
+                toolTipText: "Copiar como texto plano limpio",
                 actionHandler: { [weak self] in
                     guard let self else { return }
                     let clean = ChameleonAnalyzer.sanitizedPlainText(self.fallbackText)
@@ -466,7 +505,6 @@ final class TapCopyPanelController: NSObject {
             )
         )
 
-        // Function 2b: Quick Transform & Stats Menu (`Aa`)
         var aaSegmentRef: PillSegmentView?
         let aaSegment = PillSegmentView(
             title: "Aa",
@@ -480,7 +518,6 @@ final class TapCopyPanelController: NSObject {
         aaSegmentRef = aaSegment
         items.append(aaSegment)
 
-        // Function 3: Instant Web Search without losing focus
         if !hidesWebSearch {
             items.append(
                 PillSegmentView(
@@ -498,7 +535,6 @@ final class TapCopyPanelController: NSObject {
             )
         }
 
-        // Function 4: Floating Pin / Micro-Shelf
         items.append(
             PillSegmentView(
                 title: nil,
@@ -641,7 +677,7 @@ final class TapCopyPanelController: NSObject {
 
     private func sendCommandC() {
         guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
-        let keyCode: CGKeyCode = 0x08 // "c"
+        let keyCode: CGKeyCode = 0x08
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else {
             return

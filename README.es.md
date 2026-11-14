@@ -126,6 +126,7 @@ Después vuelve a activar TapCopy en Ajustes del Sistema. Los eventos de ejecuci
 - Seis posiciones candidatas alrededor del cursor, ajustadas al área visible de la pantalla
 - Detecta barras flotantes de terceros (PopClip, Raycast, DeepL, Grammarly, LookUp) y barras dentro de la web vía `CGWindowList`, sin permiso de Grabación de Pantalla
 - Prioriza la zona inferior del cursor, deja libre la franja superior para popovers web y revisa colisiones 160 ms después de aparecer
+- Lee barras a nivel DOM (Gemini, Notion, ChatGPT, Claude, Medium, Google Docs) a través del árbol de Accesibilidad, así también esquiva popovers dentro de la página
 
 ### Integración con el sistema
 

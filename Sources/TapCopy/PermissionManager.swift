@@ -23,7 +23,8 @@ final class PermissionManager {
         if !defaults.bool(forKey: "didRequestAccessibility") {
             defaults.set(true, forKey: "didRequestAccessibility")
             let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
+            let prompted = AXIsProcessTrustedWithOptions(options)
+            TapLog.log("Accessibility prompt shown: \(prompted)")
         }
         startPolling()
     }
@@ -50,6 +51,7 @@ final class PermissionManager {
             stopPolling()
         }
         if changed {
+            TapLog.log("Accessibility permission changed: \(trusted)")
             onChange?()
         }
     }

@@ -28,8 +28,10 @@ VERSION="$(sed -n '1p' "$REPO/version.txt" | tr -d '[:space:]')"
 BUILD="$(sed -n '2p' "$REPO/version.txt" | tr -d '[:space:]')"
 
 BUMP=0
+DEV=0
 for arg in "$@"; do
     [ "$arg" = "--bump" ] && BUMP=1
+    [ "$arg" = "--dev" ] && DEV=1
 done
 
 if [ "$BUMP" = "1" ]; then
@@ -113,6 +115,27 @@ codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 codesign -dvv "$APP" 2>&1 | grep -E "TeamIdentifier|Authority|Runtime Version" || true
 
+install_app() {
+    log "Instalando en ${INSTALL_DIR}/${APP_NAME}.app"
+    pkill -x "$APP_NAME" || true
+    sleep 0.4
+    rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
+    if ! cp -R "$APP" "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null; then
+        log "copia directa falló, reintentando con ditto"
+        ditto "$APP" "${INSTALL_DIR}/${APP_NAME}.app" || fail "No se pudo instalar en /Applications"
+    fi
+    xattr -dr com.apple.quarantine "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
+    codesign --verify --deep --strict --verbose=2 "${INSTALL_DIR}/${APP_NAME}.app"
+    open "${INSTALL_DIR}/${APP_NAME}.app"
+}
+
+# Modo desarrollo: firma local con Developer ID, sin DMG ni notarización.
+if [ "$DEV" = "1" ]; then
+    install_app
+    log "Modo dev listo: ${APP_NAME} ${VERSION} (build ${BUILD}) firmado e instalado"
+    exit 0
+fi
+
 # -------------------------------------------------------------------- dmg ---
 DMG="$DIST/${APP_NAME}-${VERSION}.dmg"
 STAGE="$DIST/dmg-stage"
@@ -153,19 +176,7 @@ SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
 log "SHA-256 ${APP_NAME}-${VERSION}.dmg: $SHA"
 
 # ---------------------------------------------------------------- install ---
-log "Instalando en ${INSTALL_DIR}/${APP_NAME}.app"
-pkill -x "$APP_NAME" || true
-sleep 0.4
-rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
-if ! cp -R "$APP" "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null; then
-    log "copia directa falló, reintentando con ditto"
-    ditto "$APP" "${INSTALL_DIR}/${APP_NAME}.app" || fail "No se pudo instalar en /Applications"
-fi
-
-xattr -dr com.apple.quarantine "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
-codesign --verify --deep --strict --verbose=2 "${INSTALL_DIR}/${APP_NAME}.app"
+install_app
 xcrun stapler validate "${INSTALL_DIR}/${APP_NAME}.app"
-
-open "${INSTALL_DIR}/${APP_NAME}.app"
 log "Listo: TapCopy ${VERSION} (build ${BUILD}) instalado y en ejecución"
 printf 'VERSION=%s\nBUILD=%s\nSHA256=%s\nDMG=%s\n' "$VERSION" "$BUILD" "$SHA" "$DMG" > "$DIST/release-info.txt"

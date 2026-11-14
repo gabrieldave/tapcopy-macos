@@ -44,6 +44,17 @@ La versión vive en `version.txt` (primera línea: versión, segunda: build).
 
 Clic derecho en el icono de la barra de menús: encender/apagar al instante.
 
+## Solución de problemas
+
+- La píldora solo aparece con **Permiso de Accesibilidad** concedido
+  (Ajustes del Sistema → Privacidad y Seguridad → Accesibilidad). El menú del
+  icono junto al reloj muestra el estado y abre el panel directamente.
+- Si la app se movió o se volvió a firmar, macOS puede pedir desactivar y
+  volver a activar el permiso.
+- Traza del pipeline en `~/Library/Logs/TapCopy.log` (rotación a 512 KB):
+  monitores instalados, gesto detectado, app leída y caracteres capturados.
+- Prueba visual interna: `open -n /Applications/TapCopy.app --args --demo-pill`.
+
 ## Estructura
 
 ```

@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let monitor = SelectionMonitor.shared
         let saved = UserDefaults.standard.object(forKey: "tapCopyEnabled") as? Bool
         monitor.isEnabled = saved ?? true
+        monitor.activate()
 
         let statusBar = StatusBarController(
             isEnabled: { SelectionMonitor.shared.isEnabled },
@@ -57,6 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               signature.isValid ? "yes" : "no",
               signature.teamIdentifier ?? "unsigned")
 
+        TapLog.log("Launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?") — accessibilityTrusted=\(PermissionManager.shared.isTrusted) enabled=\(SelectionMonitor.shared.isEnabled)")
+
         // Internal visual smoke test: TapCopy --demo-pill
         if CommandLine.arguments.contains("--demo-pill") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
@@ -64,6 +67,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     near: NSEvent.mouseLocation,
                     fallbackText: "Texto de demostración"
                 )
+            }
+        }
+
+        if CommandLine.arguments.contains("--read-now") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                SelectionMonitor.shared.debugReadFrontmostSelection()
             }
         }
     }

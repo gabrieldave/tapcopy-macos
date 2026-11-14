@@ -251,14 +251,17 @@ final class TapCopyPanelController {
 
         let pasteboard = NSPasteboard.general
         let initialChangeCount = pasteboard.changeCount
+        let source = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
         sendCommandC()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
             guard let self else { return }
-            if pasteboard.changeCount <= initialChangeCount {
+            let changed = pasteboard.changeCount > initialChangeCount
+            if !changed {
                 pasteboard.clearContents()
                 pasteboard.setString(self.fallbackText, forType: .string)
             }
+            TapLog.log("Copy requested for \(source) — cmdC=\(changed) fallback=\(!changed) chars=\(self.fallbackText.count)")
             self.showCopiedFeedback()
         }
     }

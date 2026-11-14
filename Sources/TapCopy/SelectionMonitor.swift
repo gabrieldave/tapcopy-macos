@@ -13,12 +13,7 @@ final class SelectionMonitor {
     var isEnabled: Bool = true {
         didSet {
             guard isEnabled != oldValue else { return }
-            if isEnabled {
-                installMonitors()
-            } else {
-                removeMonitors()
-                TapCopyPanelController.shared.hideImmediately()
-            }
+            applyEnabledState()
             UserDefaults.standard.set(isEnabled, forKey: "tapCopyEnabled")
         }
     }
@@ -32,13 +27,24 @@ final class SelectionMonitor {
         "AXSlider", "AXScrollBar", "AXGrowArea", "AXSplitter", "AXToolbar"
     ]
 
-    private init() {
-        if let saved = UserDefaults.standard.object(forKey: "tapCopyEnabled") as? Bool, saved {
-            installMonitors()
-        }
-    }
+    private init() {}
 
     // MARK: - Public helpers
+
+    /// Must be called once at launch: the read-only `isEnabled` default never
+    /// fires `didSet`, so monitors are installed explicitly here.
+    func activate() {
+        applyEnabledState()
+    }
+
+    private func applyEnabledState() {
+        if isEnabled {
+            installMonitors()
+        } else {
+            removeMonitors()
+            TapCopyPanelController.shared.hideImmediately()
+        }
+    }
 
     func toggle() {
         isEnabled.toggle()
@@ -52,6 +58,7 @@ final class SelectionMonitor {
 
     private func installMonitors() {
         guard monitors.isEmpty else { return }
+        TapLog.log("Event monitors installed")
 
         let mouseEvents: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
         let dismissEvents: NSEvent.EventTypeMask = [.rightMouseDown, .otherMouseDown, .scrollWheel, .keyDown]
@@ -81,10 +88,12 @@ final class SelectionMonitor {
     }
 
     private func removeMonitors() {
+        guard !monitors.isEmpty else { return }
         for monitor in monitors {
             NSEvent.removeMonitor(monitor)
         }
         monitors.removeAll()
+        TapLog.log("Event monitors removed")
     }
 
     private func handleMouse(_ event: NSEvent) {
@@ -109,6 +118,7 @@ final class SelectionMonitor {
         case .leftMouseUp:
             if insidePanel { return }
             let wasRealSelection = maxDragDistance >= 5.0 || event.clickCount >= 2
+            TapLog.log("MouseUp drag=\(String(format: "%.1f", maxDragDistance)) clicks=\(event.clickCount) real=\(wasRealSelection) trusted=\(PermissionManager.shared.isTrusted)")
             maxDragDistance = 0
             guard wasRealSelection else { return }
             scheduleSelectionRead()
@@ -139,9 +149,16 @@ final class SelectionMonitor {
         }
     }
 
+    func debugReadFrontmostSelection() {
+        readFrontmostSelection()
+    }
+
     private func readFrontmostSelection() {
         guard isEnabled else { return }
-        guard PermissionManager.shared.isTrusted else { return }
+        guard PermissionManager.shared.isTrusted else {
+            TapLog.log("Read skipped: no Accessibility permission")
+            return
+        }
         guard let frontApp = NSWorkspace.shared.frontmostApplication,
               frontApp.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
             return
@@ -149,11 +166,16 @@ final class SelectionMonitor {
 
         let pid = frontApp.processIdentifier
         let mouse = NSEvent.mouseLocation
+        TapLog.log("Reading selection from \(frontApp.localizedName ?? "?") [\(pid)]")
 
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             guard let self else { return }
             let text = self.extractSelection(pid: pid, at: mouse)
-            guard let selected = text else { return }
+            guard let selected = text else {
+                TapLog.log("No selected text returned for PID \(pid)")
+                return
+            }
+            TapLog.log("Selection captured: \(selected.count) chars")
             DispatchQueue.main.async {
                 TapCopyPanelController.shared.show(near: NSEvent.mouseLocation, fallbackText: selected)
             }
@@ -161,38 +183,60 @@ final class SelectionMonitor {
     }
 
     /// Enables the modern web accessibility trees once per process and quits at
-    /// the first non-empty selection found.
+    /// the first non-empty selection found. The element under the cursor is the
+    /// primary source (it can belong to an app that is not frontmost for a
+    /// fraction of a second), with the focused app as fallback.
     private func extractSelection(pid: pid_t, at mouse: NSPoint) -> String? {
-        let appRef = AXUIElementCreateApplication(pid)
-
-        if !enhancedPIDs.contains(pid) {
-            AXUIElementSetAttributeValue(appRef, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-            AXUIElementSetAttributeValue(appRef, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-            enhancedPIDs.insert(pid)
-            // Give Chromium/WebKit a beat to build its tree on first use.
-            usleep(35_000)
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let underCursor = element(at: mouse)
+        let cursorPID = underCursor.flatMap { ownerPID(of: $0) }
+        if let cursorPID {
+            let name = NSRunningApplication(processIdentifier: cursorPID)?.localizedName ?? "?"
+            TapLog.log("Cursor element owner: \(name) [\(cursorPID)]")
         }
 
-        var candidates: [AXUIElement] = []
-        if let focused = copyElement(appRef, attribute: kAXFocusedUIElementAttribute as String) {
-            candidates.append(focused)
+        var orderedPIDs: [pid_t] = []
+        if let cursorPID, cursorPID != ownPID, cursorPID != pid {
+            orderedPIDs.append(cursorPID)
         }
-        if let underCursor = element(at: mouse) {
-            candidates.append(underCursor)
+        if pid != ownPID {
+            orderedPIDs.append(pid)
         }
-        if let window = copyElement(appRef, attribute: kAXFocusedWindowAttribute as String) {
-            candidates.append(window)
+
+        var candidates: [(pid: pid_t, element: AXUIElement)] = []
+        if let underCursor, let cursorPID {
+            candidates.append((cursorPID, underCursor))
+        }
+
+        for targetPID in orderedPIDs {
+            let appRef = AXUIElementCreateApplication(targetPID)
+            enableModernAccessibility(appRef, pid: targetPID)
+            if let focused = copyElement(appRef, attribute: kAXFocusedUIElementAttribute as String) {
+                candidates.append((targetPID, focused))
+            }
+            if let window = copyElement(appRef, attribute: kAXFocusedWindowAttribute as String) {
+                candidates.append((targetPID, window))
+            }
         }
 
         for candidate in candidates {
-            if let role = role(of: candidate), discardedRoles.contains(role) {
+            if let role = role(of: candidate.element), discardedRoles.contains(role) {
                 continue
             }
-            if let text = extractText(from: candidate) {
+            if let text = extractText(from: candidate.element) {
                 return text
             }
         }
         return nil
+    }
+
+    private func enableModernAccessibility(_ appRef: AXUIElement, pid: pid_t) {
+        guard !enhancedPIDs.contains(pid) else { return }
+        AXUIElementSetAttributeValue(appRef, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(appRef, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        enhancedPIDs.insert(pid)
+        // Give Chromium/WebKit a beat to build its tree on first use.
+        usleep(35_000)
     }
 
     private func extractText(from element: AXUIElement) -> String? {
@@ -247,6 +291,12 @@ final class SelectionMonitor {
             return nil
         }
         return (value as! AXUIElement)
+    }
+
+    private func ownerPID(of element: AXUIElement) -> pid_t? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid > 0 else { return nil }
+        return pid
     }
 
     private func role(of element: AXUIElement) -> String? {

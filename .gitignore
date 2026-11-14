@@ -1,9 +1,11 @@
-.build/
-dist/
+*.app
 *.dmg
+*.env
 *.pkg
 *.zip
-*.app
 .DS_Store
-*.env
+.build/
+dist/
+node_modules/
 secrets.env
+web/node_modules/

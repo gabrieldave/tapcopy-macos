@@ -4,6 +4,7 @@ import ApplicationServices
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusBarController: StatusBarController?
+    private var reminderTimer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var appObservers: [NSObjectProtocol] = []
 
@@ -48,6 +49,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AboutWindowController.shared.refreshIfVisible()
         }
         PermissionManager.shared.requestIfNeeded()
+
+        // Licensing: localized window, expired-state gate (C once per session) and
+        // the gentle day 11-14 reminder that only fires after 2 s of real idle.
+        LicenseWindowController.shared.isSpanish = Locale.preferredLanguages.first?.hasPrefix("es") ?? true
+        LicenseWindowController.shared.onQuit = { NSApp.terminate(nil) }
+
+        if !LicenseManager.shared.canUseApp {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                LicenseWindowController.shared.show(.trialExpired)
+            }
+        }
+
+        let reminderTimer = Timer(timeInterval: 1.0, repeats: true) { _ in
+            guard SelectionMonitor.shared.secondsSinceLastActivity >= 2.0,
+                  !TapCopyPanelController.shared.isVisible else { return }
+            LicenseManager.shared.showReminderIfDue(isIdle: true)
+        }
+        RunLoop.main.add(reminderTimer, forMode: .common)
+        self.reminderTimer = reminderTimer
+
+        AppUpdateChecker.shared.checkSilentlyIfDue()
 
         if !hideDock {
             NSApp.activate(ignoringOtherApps: true)
@@ -124,6 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        reminderTimer?.invalidate()
+        reminderTimer = nil
         SelectionMonitor.shared.shutdown()
         PinShelfController.shared.closeAll()
 

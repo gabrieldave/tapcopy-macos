@@ -18,6 +18,7 @@ final class AboutWindowController: NSObject {
     private let chipLabel = NSTextField(labelWithString: "")
     private let signatureLabel = NSTextField(labelWithString: "")
     private let permissionLabel = NSTextField(labelWithString: "")
+    private let licenseLabel = NSTextField(labelWithString: "")
     private let stateLabel = NSTextField(labelWithString: "")
 
     private let testPillButton = NSButton(title: "", target: nil, action: nil)
@@ -89,7 +90,7 @@ final class AboutWindowController: NSObject {
         stack.addArrangedSubview(versionLabel)
         stack.setCustomSpacing(16, after: versionLabel)
 
-        for label in [stateLabel, chipLabel, signatureLabel, permissionLabel] {
+        for label in [stateLabel, chipLabel, signatureLabel, permissionLabel, licenseLabel] {
             label.font = .systemFont(ofSize: 12, weight: .regular)
             label.textColor = .secondaryLabelColor
             label.alignment = .center
@@ -100,7 +101,8 @@ final class AboutWindowController: NSObject {
             stack.addArrangedSubview(label)
         }
 
-        stack.setCustomSpacing(18, after: permissionLabel)
+        stack.setCustomSpacing(10, after: permissionLabel)
+        stack.setCustomSpacing(18, after: licenseLabel)
 
         languageControl.target = self
         languageControl.action = #selector(languageChanged(_:))
@@ -168,6 +170,18 @@ final class AboutWindowController: NSObject {
                 ? "Firma: Developer ID \(SignatureVerifier.expectedTeamIdentifier) ✓"
                 : "Firma: sin verificar · Team \(signature.teamIdentifier ?? "—")"
             permissionLabel.stringValue = PermissionManager.shared.statusTextES
+            if let plan = LicenseManager.shared.currentLicense?.plan {
+                licenseLabel.stringValue = plan == .pro
+                    ? "Licencia Pro · hasta 3 Macs"
+                    : "Licencia Personal · 1 Mac"
+                licenseLabel.textColor = .systemGreen
+            } else if LicenseManager.shared.trialExpired {
+                licenseLabel.stringValue = "Prueba de 14 días finalizada"
+                licenseLabel.textColor = .systemOrange
+            } else {
+                licenseLabel.stringValue = "Prueba gratis · quedan \(LicenseManager.shared.trialDaysLeft) días"
+                licenseLabel.textColor = .secondaryLabelColor
+            }
             testPillButton.title = "Probar píldora"
             permissionButton.title = "Abrir Accesibilidad"
             copyButton.title = "Copiar diagnóstico"
@@ -182,6 +196,18 @@ final class AboutWindowController: NSObject {
                 ? "Signature: Developer ID \(SignatureVerifier.expectedTeamIdentifier) ✓"
                 : "Signature: unverified · Team \(signature.teamIdentifier ?? "—")"
             permissionLabel.stringValue = PermissionManager.shared.statusTextEN
+            if let plan = LicenseManager.shared.currentLicense?.plan {
+                licenseLabel.stringValue = plan == .pro
+                    ? "Pro License · up to 3 Macs"
+                    : "Personal License · 1 Mac"
+                licenseLabel.textColor = .systemGreen
+            } else if LicenseManager.shared.trialExpired {
+                licenseLabel.stringValue = "14-day trial ended"
+                licenseLabel.textColor = .systemOrange
+            } else {
+                licenseLabel.stringValue = "Free trial · \(LicenseManager.shared.trialDaysLeft) days left"
+                licenseLabel.textColor = .secondaryLabelColor
+            }
             testPillButton.title = "Test Pill"
             permissionButton.title = "Open Accessibility"
             copyButton.title = "Copy Diagnostics"
@@ -233,6 +259,8 @@ final class AboutWindowController: NSObject {
         Team ID: \(signature.teamIdentifier ?? "none")
         Signing ID: \(signature.signingIdentifier ?? "none")
         Accessibility: \(granted ? "granted" : "pending")
+        License: \(LicenseManager.shared.currentLicense?.plan.rawValue ?? "none")
+        Trial days left: \(LicenseManager.shared.trialDaysLeft)
         Enabled: \(SelectionMonitor.shared.isEnabled)
         Dock icon hidden: \(dockHidden)
         """

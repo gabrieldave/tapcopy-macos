@@ -59,6 +59,15 @@ El pipeline escribe `VERSION`, `BUILD`, `SHA256` y la ruta del DMG en `dist/rele
 
 Todo es local: sin cuenta, sin telemetría, sin subidas.
 
+## 🔐 Privacidad en v1.1.0
+
+El texto que seleccionas se procesa **100% localmente** en tu Mac y nunca se sube, almacena ni transmite. Las únicas peticiones de red que hace TapCopy son:
+
+- **Activación / desactivación de licencia** — la clave, un hash SHA-256 con sal del dispositivo y el nombre de la Mac.
+- **Consulta firmada de actualizaciones** — un GET anónimo a `tapcopy.iareal.net/api/updates/latest`; el DMG solo se acepta si su SHA-256 coincide con el manifiesto *y* la firma Ed25519 del manifiesto valida contra la llave pública embebida en la app.
+
+Sin telemetría, sin analítica, sin cuentas y sin permiso de Grabación de Pantalla.
+
 ## 📖 Guías
 
 Todavía no existe un sitio de documentación externo. Estos son los procedimientos verificados de la app y de su pipeline.

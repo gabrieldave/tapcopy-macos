@@ -19,6 +19,12 @@ final class SelectionMonitor {
     private(set) var isChameleonModeEnabled: Bool = true
     private(set) var lastExternalApp: (name: String, bundleID: String)?
 
+    /// Timestamp of the last mouse/key gesture; the licensing reminder uses it
+    /// to wait for a genuinely quiet moment before interrupting.
+    private(set) var lastActivityDate: Date = Date()
+
+    var secondsSinceLastActivity: TimeInterval { Date().timeIntervalSince(lastActivityDate) }
+
     private var excludedBundleIDs: Set<String> = []
     private var monitors: [Any] = []
     private var isTrackingDrag = false
@@ -175,6 +181,7 @@ final class SelectionMonitor {
     }
 
     private func handleMouse(_ event: NSEvent) {
+        lastActivityDate = Date()
         guard isEnabled else { return }
         let mouse = NSEvent.mouseLocation
         let insideOwnUI = TapCopyPanelController.shared.contains(screenPoint: mouse, toleratedInset: 4)
@@ -218,6 +225,7 @@ final class SelectionMonitor {
     }
 
     private func handleDismiss(_ event: NSEvent) {
+        lastActivityDate = Date()
         guard isEnabled else { return }
         switch event.type {
         case .keyDown:
@@ -259,6 +267,13 @@ final class SelectionMonitor {
         guard isEnabled else { return }
         guard PermissionManager.shared.refresh() else {
             TapLog.log("Read skipped: Accessibility permission not granted")
+            return
+        }
+        guard LicenseManager.shared.canUseApp else {
+            TapLog.log("Read skipped: trial expired and no license")
+            DispatchQueue.main.async {
+                LicenseWindowController.shared.show(.trialExpired)
+            }
             return
         }
         guard let frontApp = NSWorkspace.shared.frontmostApplication,

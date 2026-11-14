@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /checkout/
+Sitemap: https://tapcopy.iareal.net/sitemap.xml

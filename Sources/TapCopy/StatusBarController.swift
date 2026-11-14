@@ -180,6 +180,25 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         aboutItem.target = self
         menu.addItem(aboutItem)
 
+        let licenseTitle = LicenseManager.shared.isLicensed
+            ? "Licencia…"
+            : (LicenseManager.shared.trialExpired ? "Activar licencia…" : "Licencia… (prueba: \(LicenseManager.shared.trialDaysLeft) días)")
+        let licenseItem = NSMenuItem(
+            title: licenseTitle,
+            action: #selector(showLicense),
+            keyEquivalent: ""
+        )
+        licenseItem.target = self
+        menu.addItem(licenseItem)
+
+        let updateItem = NSMenuItem(
+            title: "Buscar actualizaciones…",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        menu.addItem(updateItem)
+
         let quitItem = NSMenuItem(
             title: "Salir de TapCopy",
             action: #selector(quit),
@@ -226,6 +245,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func showAbout() {
         AboutWindowController.shared.show()
+    }
+
+    @objc private func showLicense() {
+        LicenseWindowController.shared.show(LicenseManager.shared.windowState())
+    }
+
+    @objc private func checkForUpdates() {
+        AppUpdateChecker.shared.checkInteractively()
     }
 
     @objc private func quit() {

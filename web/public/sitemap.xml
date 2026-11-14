@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url><loc>https://tapcopy.iareal.net/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://tapcopy.iareal.net/"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://tapcopy.iareal.net/es/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://tapcopy.iareal.net/"/>
+  </url>
+  <url><loc>https://tapcopy.iareal.net/es/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://tapcopy.iareal.net/"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://tapcopy.iareal.net/es/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://tapcopy.iareal.net/"/>
+  </url>
+  <url><loc>https://tapcopy.iareal.net/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://tapcopy.iareal.net/privacy"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://tapcopy.iareal.net/es/privacy"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://tapcopy.iareal.net/privacy"/>
+  </url>
+  <url><loc>https://tapcopy.iareal.net/es/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://tapcopy.iareal.net/privacy"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://tapcopy.iareal.net/es/privacy"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://tapcopy.iareal.net/privacy"/>
+  </url>
+  <url><loc>https://tapcopy.iareal.net/terms</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://tapcopy.iareal.net/terms"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://tapcopy.iareal.net/es/terms"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://tapcopy.iareal.net/terms"/>
+  </url>
+  <url><loc>https://tapcopy.iareal.net/es/terms</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://tapcopy.iareal.net/terms"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://tapcopy.iareal.net/es/terms"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://tapcopy.iareal.net/terms"/>
+  </url>
+</urlset>

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="{{htmlLang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{@legalTitle}}</title>
+<meta name="description" content="{{@legalHeading}} · TapCopy · BLACK EYE">
+<meta name="theme-color" content="#0A0B0D">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="{{@canonical}}">
+<link rel="alternate" hreflang="en" href="{{@origin}}{{@pathEn}}">
+<link rel="alternate" hreflang="es" href="{{@origin}}{{@pathEs}}">
+<link rel="alternate" hreflang="x-default" href="{{@origin}}{{@pathEn}}">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="{{@fontsHref}}">
+<link rel="stylesheet" href="/assets/site.css?v={{@version}}">
+</head>
+<body data-lang="{{lang}}" class="legal-page">
+<header class="nav">
+  <div class="nav__inner wrap">
+    <a class="brand" href="{{home}}" aria-label="TapCopy">
+      <span class="brand__mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand__word">TapCopy</span>
+    </a>
+    <div class="nav__end">
+      <a class="lang-switch" href="{{@otherPath}}" data-set-lang="{{otherLang}}" hreflang="{{otherLang}}" aria-label="{{nav.switchAria}}">
+        <span class="lang-switch__opt" aria-current="true">{{@thisShort}}</span><span class="lang-switch__opt">{{otherShort}}</span>
+      </a>
+    </div>
+  </div>
+</header>
+<main id="main" class="legal wrap">
+  <a class="legal__back" href="{{home}}">{{legal.back}}</a>
+  <p class="kicker">BLACK EYE · TapCopy</p>
+  <h1>{{@legalHeading}}</h1>
+  <p class="legal__updated num">{{legal.updated}}</p>
+  <div class="legal__body">{{@legalBody}}</div>
+</main>
+{{@footer}}
+<script id="i18n" type="application/json">{{@i18nJson}}</script>
+<script src="/assets/site.js?v={{@version}}" defer></script>
+</body>
+</html>

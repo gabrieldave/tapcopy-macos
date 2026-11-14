@@ -1,0 +1,71 @@
+<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TapCopy v1.1.0 · Wireframe ventana de licencia (AppKit)</title>
+<style>
+:root{--accent:#38BDF8;--ok:#10B981;--warn:#FF9F0A;--danger:#FF453A;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;padding:40px;background:#2a2b30;font:13px -apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;color:#F4F4F5}
+h1{font-size:22px;margin:0 0 4px}p.lead{margin:0 0 30px;color:#A1A1AA;max-width:900px;line-height:1.5}
+.grid{display:flex;flex-wrap:wrap;gap:36px}
+figure{margin:0}figcaption{font:500 12px ui-monospace,Menlo,monospace;color:#A1A1AA;margin-bottom:10px}figcaption b{color:var(--accent)}
+.win{position:relative;width:480px;height:440px;border-radius:12px;padding:40px 28px 24px;background:rgba(30,31,34,.97);border:1px solid rgba(255,255,255,.12);box-shadow:0 30px 80px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.06);display:flex;flex-direction:column;align-items:center}
+.tb{position:absolute;left:14px;top:9px;display:flex;gap:8px}.tb i{width:12px;height:12px;border-radius:50%;background:#FF5F57}.tb i:nth-child(2){background:#FEBC2E}.tb i:nth-child(3){background:#28C840}
+.icon{width:64px;height:64px;border-radius:15px;background:linear-gradient(160deg,#26272c,#0d0e10);border:1px solid rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;gap:5px}
+.icon span{width:9px;height:9px;border-radius:50%;background:#F4F4F5}.icon span:first-child{background:var(--accent)}.icon span:nth-child(2){background:var(--ok)}
+.title{margin-top:8px;font-size:20px;font-weight:600}.sub{margin-top:2px;font-size:12px;color:rgba(235,235,245,.6)}
+.sub.warn{color:var(--warn)}.sub.danger{color:var(--danger)}.sub.ok{color:var(--ok)}
+.card{width:424px;margin-top:22px;padding:12px 14px 14px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10)}
+.row{display:flex;justify-content:space-between;align-items:center}.lbl{font-size:11px;font-weight:600;letter-spacing:.04em;color:rgba(235,235,245,.6)}
+.tnum{font-variant-numeric:tabular-nums;font-size:13px}.track{margin-top:10px;height:6px;border-radius:3px;background:rgba(255,255,255,.1);overflow:hidden}
+.track i{display:block;height:100%;border-radius:3px}.track .accent{background:var(--accent)}.track .warn{background:var(--warn)}.track .danger{background:var(--danger)}
+.lic .mono{margin-top:8px;font:500 15px ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.02em}.okc{color:var(--ok);font-size:12px;font-weight:600}.small{margin-top:4px;font-size:12px;color:rgba(235,235,245,.6)}
+.sect{align-self:flex-start;margin-top:22px;font-size:13px;font-weight:600}
+.field{width:424px;height:38px;margin-top:8px;padding:0 12px;display:flex;align-items:center;border-radius:8px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.15);font:500 15px ui-monospace,"SF Mono",Menlo,monospace}
+.field.focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(56,189,248,.25)}.field.err{border-color:var(--danger);box-shadow:0 0 0 3px rgba(255,69,58,.2)}.field.dis{opacity:.5}
+.ph{color:rgba(235,235,245,.3)}
+.status{align-self:flex-start;min-height:32px;margin-top:8px;font-size:12px;line-height:1.35}.status.danger{color:var(--danger)}.status.ok{color:var(--ok)}
+.foot{margin-top:auto;width:100%;display:flex;justify-content:space-between;align-items:center}
+.buy{color:var(--accent);font-weight:500;font-size:13px}.btns{display:flex;gap:10px}
+.btn{height:24px;padding:0 13px;border-radius:6px;border:0;font:13px -apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;color:#fff;background:rgba(255,255,255,.18);box-shadow:inset 0 .5px 0 rgba(255,255,255,.2);display:inline-flex;align-items:center;gap:6px}
+.btn.primary{background:var(--accent);color:#04121a;font-weight:500}.btn.dis{opacity:.45}
+.spinner{width:12px;height:12px;border-radius:50%;border:2px solid rgba(0,0,0,.25);border-top-color:#04121a}
+.spec{margin-top:40px;max-width:1000px;color:#A1A1AA;line-height:1.6}.spec code{color:#F4F4F5}
+</style></head><body>
+<h1>TapCopy v1.1.0 · Ventana de Prueba / Activación (AppKit, Cupertino oscuro)</h1>
+<p class="lead">Maqueta a escala 1:1 (1 px = 1 pt). Ventana 480 × 440 pt, margen 28 pt, NSVisualEffectView .underWindowBackground, appearance .darkAqua. Copy mostrado en ES; tabla EN|ES completa en LICENSE_WINDOW_SPEC.md §6.</p>
+<div class="grid"><figure><figcaption><b>A</b> · trialActive · 9 días</figcaption>
+    <div class="win"><div class="tb"><i></i><i></i><i></i></div>
+      <div class="icon"><span></span><span></span><span></span></div>
+      <div class="title">TapCopy</div><div class="sub sec">Prueba gratis · quedan 9 días</div>
+      <div class="card"><div class="row"><span class="lbl">PRUEBA GRATIS</span><span class="tnum">Día 5 de 14</span></div>
+        <div class="track"><i class="accent" style="width:35.7%"></i></div></div><div class="sect">Activar licencia</div><div class="field focus">TCOPY-8K2Q</div><div class="status"></div>
+      <div class="foot"><a class="buy">Comprar licencia ↗</a><div class="btns"><button class="btn ">Seguir probando</button><button class="btn primary">Activar</button></div></div>
+    </div></figure><figure><figcaption><b>B</b> · trialEndingSoon · 2 días</figcaption>
+    <div class="win"><div class="tb"><i></i><i></i><i></i></div>
+      <div class="icon"><span></span><span></span><span></span></div>
+      <div class="title">TapCopy</div><div class="sub warn">Prueba gratis · quedan 2 días</div>
+      <div class="card"><div class="row"><span class="lbl">PRUEBA GRATIS</span><span class="tnum">Día 12 de 14</span></div>
+        <div class="track"><i class="warn" style="width:85.7%"></i></div></div><div class="sect">Activar licencia</div><div class="field"><span class="ph">TCOPY-XXXX</span></div><div class="status"></div>
+      <div class="foot"><a class="buy">Comprar licencia ↗</a><div class="btns"><button class="btn ">Seguir probando</button><button class="btn primary dis">Activar</button></div></div>
+    </div></figure><figure><figcaption><b>C</b> · trialExpired + error</figcaption>
+    <div class="win"><div class="tb"><i></i><i></i><i></i></div>
+      <div class="icon"><span></span><span></span><span></span></div>
+      <div class="title">TapCopy</div><div class="sub danger">Tu prueba de 14 días terminó</div>
+      <div class="card"><div class="row"><span class="lbl">PRUEBA GRATIS</span><span class="tnum">Día 14 de 14</span></div>
+        <div class="track"><i class="danger" style="width:100.0%"></i></div></div><div class="sect">Activar licencia</div><div class="field err">TCOPY-0000</div><div class="status danger">Esa clave no es válida. Revísala e inténtalo de nuevo.</div>
+      <div class="foot"><a class="buy">Comprar licencia ↗</a><div class="btns"><button class="btn ">Salir de TapCopy</button><button class="btn primary">Activar</button></div></div>
+    </div></figure><figure><figcaption><b>D</b> · activating</figcaption>
+    <div class="win"><div class="tb"><i></i><i></i><i></i></div>
+      <div class="icon"><span></span><span></span><span></span></div>
+      <div class="title">TapCopy</div><div class="sub sec">Prueba gratis · quedan 9 días</div>
+      <div class="card"><div class="row"><span class="lbl">PRUEBA GRATIS</span><span class="tnum">Día 5 de 14</span></div>
+        <div class="track"><i class="accent" style="width:35.7%"></i></div></div><div class="sect">Activar licencia</div><div class="field dis">TCOPY-8K2Q-7F3A</div><div class="status"></div>
+      <div class="foot"><a class="buy">Comprar licencia ↗</a><div class="btns"><button class="btn dis">Seguir probando</button><button class="btn primary dis spin"><span class=spinner></span>Activar</button></div></div>
+    </div></figure><figure><figcaption><b>E</b> · licensed(pro)</figcaption>
+    <div class="win"><div class="tb"><i></i><i></i><i></i></div>
+      <div class="icon"><span></span><span></span><span></span></div>
+      <div class="title">TapCopy</div><div class="sub ok">Licencia Pro · hasta 3 Macs</div>
+      <div class="card lic"><div class="row"><span class="lbl">CLAVE</span><span class="okc">✓ Activa</span></div>
+        <div class="mono">TCOPY-••••-••••-7F3A</div><div class="small">Actualizaciones v1.x incluidas</div></div><div class="status ok">✓ Licencia activada. ¡Gracias!</div>
+      <div class="foot"><span></span><div class="btns"><button class="btn ">Desactivar esta Mac</button><button class="btn primary">Listo</button></div></div>
+    </div></figure></div>
+<div class="spec"><p><b>Medidas clave:</b> icono 64 pt · título 20 semibold · subtítulo 12 · tarjeta 424×68 r12 · barra 6 pt r3 · campo 424×38 r8 SF Mono 15 medium · botones .rounded 24 pt de alto · fila inferior a 24 pt del borde. Colores: accent <code>#38BDF8</code>, success <code>#10B981</code>, warning <code>systemOrange</code>, danger <code>systemRed</code>.</p></div>
+</body></html>

@@ -1,0 +1,128 @@
+{
+  "protocol": "BLACK EYE · JSON transfer",
+  "from": "Claude (CTO · Tecnología y Arquitectura) — roles: DISEÑADOR UI/WEB + DIRECTOR COPY",
+  "to": "OpenCode (integración backend)",
+  "date": "2026-11-14",
+  "product": "TapCopy — The Chameleon Text Pill for macOS",
+  "domain": "tapcopy.iareal.net",
+  "repo": "gabrieldave/tapcopy-macos",
+  "branch": "web-factory/tapcopy-site",
+  "archetype": "04 Kinetic SaaS Command",
+  "status": "frontend_complete_backend_pending",
+  "requires_director_approval_before_launch": true,
+
+  "stack": {
+    "hosting_target": "Cloudflare Pages (static /web/public + Pages Functions /web/functions)",
+    "build": "cd web && node build.mjs   (Node 22, zero dependencies)",
+    "tests": "cd web && npm test   (16 language-routing tests, all passing)",
+    "source_of_truth_for_copy": ["web/src/i18n/en.json", "web/src/i18n/es.json"],
+    "templates": ["web/src/templates/landing.html", "web/src/templates/legal.html"],
+    "config": "web/site.config.json",
+    "client_runtime": "web/public/assets/site.js (vanilla, CSP-safe, no eval)",
+    "styles": "web/public/assets/site.css (Bricolage Grotesque + JetBrains Mono, tabular-nums on prices/metrics/counters; no Inter, no Roboto)"
+  },
+
+  "routes": {
+    "/": "Landing EN (default: United States and every other country)",
+    "/es/": "Landing ES (executive Mexican Spanish)",
+    "/privacy": "Privacy Policy EN · BLACK EYE",
+    "/terms": "Terms of Service EN · BLACK EYE",
+    "/es/privacy": "Aviso de Privacidad ES · BLACK EYE",
+    "/es/terms": "Términos de Servicio ES · BLACK EYE",
+    "/sitemap.xml": "generated with hreflang en/es/x-default pairs",
+    "/robots.txt": "disallows /api/ and /checkout/"
+  },
+
+  "geo_language_routing": {
+    "file": "web/functions/_middleware.js + web/functions/_lib/lang.js",
+    "priority": [
+      "1. Cookie tapcopy-lang (en|es, Max-Age 31536000, Path=/, SameSite=Lax, Secure) — set ONLY by the manual switcher",
+      "2. CF-IPCountry in [MX, AR, BO, CL, CO, CR, CU, DO, EC, SV, GQ, GT, HN, NI, PA, PY, PE, PR, ES, UY, VE] → /es/",
+      "3. Accept-Language whose highest-q language is es* → /es/",
+      "4. Otherwise English /"
+    ],
+    "redirect": "302 + Cache-Control: private, no-store; query string preserved",
+    "vary_header": "CF-IPCountry, Cookie, Accept-Language (Accept-Language added because it is part of the decision)",
+    "bots": "Never redirected (Googlebot, Bingbot, Applebot, social previews, SEO crawlers, missing UA)",
+    "deep_links": "A visitor without cookie who opens /es/ directly stays there; only cookie=en moves them out",
+    "assets_and_api": "bypass middleware (any path with file extension, /api/*)"
+  },
+
+  "backend_endpoints_to_implement": [
+    {
+      "method": "POST",
+      "path": "/api/trial",
+      "request_json": { "email": "string|null (optional)", "lang": "en|es", "source": "landing" },
+      "response_json": { "downloadUrl": "/download/TapCopy.dmg (must start with /)" },
+      "no_js_fallback": "form POST application/x-www-form-urlencoded → respond 303 to the .dmg",
+      "rule": "Never block the download: the client falls back to config.downloadUrl after 3 s or on any error. No credit card ever requested."
+    },
+    {
+      "method": "GET",
+      "path": "/checkout/personal?lang=en|es",
+      "action": "Create checkout session for Personal — 7.99 USD one-time, 1 Mac, v1.x updates, 14-day refund — and 302 to provider",
+      "client_event": "window 'tapcopy:checkout' {plan, price, currency}"
+    },
+    {
+      "method": "GET",
+      "path": "/checkout/pro?lang=en|es",
+      "action": "Create checkout session for Pro — 14.99 USD one-time, up to 3 Macs, v1.x updates, 14-day refund — and 302 to provider"
+    },
+    {
+      "method": "GET",
+      "path": "/download/TapCopy.dmg",
+      "action": "Serve the signed + notarized + stapled DMG produced by scripts/build_and_notarize.sh (dist/release-info.txt has SHA256)"
+    },
+    {
+      "method": "POST",
+      "path": "/api/license/activate",
+      "status": "PROPOSAL — needs Director General approval (docs/licensing/LICENSE_WINDOW_SPEC.md §8)"
+    }
+  ],
+
+  "validated_commercial_data_locked_by_build": {
+    "personal_usd": "7.99",
+    "pro_usd": "14.99",
+    "trial_days": 14,
+    "subscription_competitor": "29.99/year → 89.97 over 3 years",
+    "popclip_plus_dropover": "16.99–33.99 (PopClip 12–29 + Dropover 4.99)",
+    "max_savings_vs_subscription": "81.98 (Personal) / 74.98 (Pro)",
+    "pro_per_mac": "5.00",
+    "note": "build.mjs throws if any of these drift or if en/es keys differ"
+  },
+
+  "placeholders_pending_from_director": [
+    "youtubeId in web/site.config.json (empty → facade shows 'Tutorial video coming soon' and never loads YouTube)",
+    "Checkout provider (Stripe / Lemon Squeezy / Paddle) for /checkout/*",
+    "Public download URL / storage for TapCopy.dmg",
+    "Contact email and governing jurisdiction for /privacy and /terms (currently 'channels listed on tapcopy.iareal.net'; legal review recommended)",
+    "If license activation goes live, update README ('never opens a network request') and site copy to say only activation contacts the server"
+  ],
+
+  "third_parties_on_site": {
+    "Google Fonts": "fonts.googleapis.com / fonts.gstatic.com (optional: self-host woff2 under /assets/fonts and drop from CSP + privacy policy)",
+    "YouTube": "youtube-nocookie.com iframe only after click",
+    "WhatsApp": "wa.me/525645674407 — labeled 'Quick questions only' / 'Solo dudas rápidas'"
+  },
+
+  "security_headers": "web/public/_headers (CSP, nosniff, Referrer-Policy, Permissions-Policy clipboard-write=self, immutable /assets cache — bump site.config.json version on every asset change)",
+
+  "macos_deliverable": {
+    "spec": "docs/licensing/LICENSE_WINDOW_SPEC.md",
+    "wireframe": "docs/licensing/license-window-wireframe.html (5 states, 1 px = 1 pt)",
+    "swift_reference": "docs/licensing/LicenseWindowController.swift (outside the SwiftPM target; not compiled here — run swift build on macOS 14+ after moving to Sources/TapCopy)",
+    "target_version": "1.1.0"
+  },
+
+  "qa_done": [
+    "16/16 language routing unit tests",
+    "Middleware simulated with real Request/Response objects (302 MX, 200 US, cookie override, bot bypass, Vary present)",
+    "Headless Chromium 1440×900 and 390×844: hero auto-demo, click/drag selection, = 500, RGB swatch, Aa menu with live counts, 4-pin limit, pointer drag",
+    "All 6 HTML pages parse with balanced tags; no leftover template tokens"
+  ],
+  "qa_pending": [
+    "Real Safari/macOS pass (fonts load from Google there; blocked in the sandbox)",
+    "Lighthouse after deploy",
+    "End-to-end checkout and trial download once endpoints exist"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "origin": "https://tapcopy.iareal.net",
+  "version": "1.1.0",
+  "youtubeId": "",
+  "downloadUrl": "/download/TapCopy.dmg",
+  "trialEndpoint": "/api/trial",
+  "checkout": {
+    "personal": "/checkout/personal",
+    "pro": "/checkout/pro"
+  },
+  "prices": {
+    "personal": "7.99",
+    "pro": "14.99",
+    "subscriptionYear": "29.99",
+    "subscription3y": "89.97",
+    "comboMin": "16.99",
+    "comboMax": "33.99",
+    "maxSavings": "81.98",
+    "proSavings": "74.98",
+    "proPerMac": "5.00"
+  },
+  "whatsapp": "525645674407",
+  "whatsappDisplay": "+52 56 4567 4407",
+  "fontsHref": "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+}

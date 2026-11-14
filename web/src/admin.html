@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>TapCopy · Admin</title>
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot"></span> TapCopy <span class="muted">Admin</span></div>
+  <div class="who"><span id="email" class="muted">…</span><a href="/api/auth/logout" class="link">Salir</a></div>
+</header>
+
+<main>
+  <section class="grid" aria-label="Resumen">
+    <article class="card"><p class="k">Ingresos</p><p class="v" id="revenue">—</p><p class="s" id="orders">—</p></article>
+    <article class="card"><p class="k">Licencias</p><p class="v" id="licenses">—</p><p class="s" id="seats">—</p></article>
+    <article class="card"><p class="k">Leads trial</p><p class="v" id="leads">—</p><p class="s" id="leadsWeek">—</p></article>
+    <article class="card"><p class="k">Portal auto-update</p><p class="v" id="manifestVersion">—</p><p class="s mono" id="manifestSha">—</p></article>
+  </section>
+
+  <section class="panel">
+    <div class="panel__head">
+      <h2>Licencias</h2>
+      <form id="issue" class="inline">
+        <input id="issueEmail" type="email" placeholder="email del cliente (opcional)" autocomplete="off">
+        <select id="issuePlan"><option value="personal">Personal · 1 Mac · $7.99</option><option value="pro">Pro · 3 Macs · $14.99</option></select>
+        <button type="submit">Emitir clave</button>
+      </form>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Clave</th><th>Plan</th><th>Asientos</th><th>Estado</th><th>Email</th><th>Creada</th><th></th></tr></thead>
+        <tbody id="licenseRows"><tr><td colspan="7" class="muted">Cargando…</td></tr></tbody>
+      </table>
+    </div>
+    <p id="issueOut" class="mono out"></p>
+  </section>
+
+  <section class="panel">
+    <div class="panel__head"><h2>Leads del trial</h2></div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Email</th><th>Idioma</th><th>País</th><th>Origen</th><th>Fecha</th></tr></thead>
+        <tbody id="leadRows"><tr><td colspan="5" class="muted">Cargando…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="/assets/admin.js" defer></script>
+</body>
+</html>

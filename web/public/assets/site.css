@@ -189,7 +189,7 @@ kbd { font: 500 12px var(--mono); border: 1px solid var(--line-2); border-bottom
 
 .aa-menu {
   position: absolute; z-index: 6; min-width: 248px; padding: 5px; border-radius: 10px;
-  background: rgba(36,37,41,.96); border: 1px solid rgba(255,255,255,.12); backdrop-filter: blur(24px);
+  background: rgba(36,37,41,.96); border: 1px solid rgba(255,255,255,.12); backdrop-filter: blur(16px);
   box-shadow: 0 24px 50px -12px rgba(0,0,0,.8); font: 400 13px var(--mac);
 }
 .aa-menu[hidden] { display: none; }
@@ -447,7 +447,13 @@ kbd { font: 500 12px var(--mono); border: 1px solid var(--line-2); border-bottom
 [data-reveal].is-visible { opacity: 1; transform: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
-  [data-reveal] { opacity: 1; transform: none; }
   html { scroll-behavior: auto; }
+  .pill, .pill *, .seg, .btn, .nav__links a, .aa-menu, .aa-menu *,
+  .toast, .toast *, .cell, .pin-card, .marquee__track, .ai-chip, .ghost-slot,
+  .morph-word, .tok, .hud__led, .mini-pill, .viz--case span, .viz--pin i,
+  .ov-pill, .cpu-line::after, .bar, .lyt__btn, .wa, .dot, [data-reveal] {
+    transition: none !important;
+    animation: none !important;
+  }
+  [data-reveal] { opacity: 1; transform: none; }
 }

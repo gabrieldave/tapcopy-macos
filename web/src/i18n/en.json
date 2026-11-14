@@ -20,7 +20,8 @@
     "security": "Security",
     "pricing": "Pricing",
     "cta": "Free trial",
-    "switchAria": "Cambiar el sitio a español"
+    "switchAria": "Cambiar el sitio a español",
+    "primaryAria": "Primary"
   },
   "hero": {
     "eyebrow": "TapCopy · Native macOS utility by BLACK EYE",

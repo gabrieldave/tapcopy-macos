@@ -797,8 +797,19 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/admin' || pathname === '/admin/') {
       const session = readSession(req.headers.cookie);
       if (!session) {
-        res.writeHead(302, { Location: '/api/auth/google', 'Cache-Control': 'no-store' });
-        return res.end();
+        // Fail-closed: 401 with a client-side hand-off to Google OAuth.
+        const html = `<!doctype html><meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=/api/auth/google">
+<title>TapCopy · Admin</title>
+<body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d0e11;color:#f4f4f5;display:grid;place-items:center;height:100vh;margin:0">
+<p>401 · Acceso restringido · <a style="color:#38bdf8" href="/api/auth/google">Entrar con Google</a></p>
+</body>`;
+        res.writeHead(401, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+          ...securityHeaders('/admin'),
+        });
+        return res.end(html);
       }
       const html = await fsp.readFile(path.join(ROOT, 'src', 'admin.html'), 'utf8');
       res.writeHead(200, {
